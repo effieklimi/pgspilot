@@ -79,7 +79,7 @@ else
   # --- This is your original pipeline logic ---
 
   # Source config from its fixed path inside the container
-  source "/app/scripts/config.sh"
+  source "/app/scripts/pipeline/config.sh"
 
   if [[ $# -lt 1 ]]; then
     echo "Usage (in Container): $0 <23andme.txt[.gz] | imputed.vcf.gz> [--traits \"Height,LDL\"] [--coverage 0.95]" >&2
