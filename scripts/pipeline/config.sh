@@ -1,10 +1,13 @@
+#!/usr/bin/env bash
 # Shared settings for all scripts. 
 
 THREADS=${THREADS:-4}
-ROOT_DIR=$(pwd)
 
-BASE=$(basename "$IN_TXT")
-STEM=${BASE%%.*}
+if [ -n "${INSIDE_DOCKER:-}" ]; then
+    ROOT_DIR="/app"
+else
+    ROOT_DIR=$(pwd)
+fi
 
 INPUT_BUILD="${INPUT_BUILD:-auto}"   # override with INPUT_BUILD=38 ./impute_23andme.sh file.txt
 TARGET_BUILD=38
@@ -16,7 +19,7 @@ CHAIN="${ROOT_DIR}/genome_data/chain/hg19ToHg38.over.chain.gz"
 
 # 1000G / reference cohort (for calibration, not for PCA)
 ONEKG_VCF_PATTERN="${ROOT_DIR}/genome_data/1000g/1kGP_high_coverage_Illumina.chr{chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"  # {chr} replaced by 1..22
-ONEKG_LABELS="${ROOT_DIR}/genome_data/1000g/integrated_call_samples_v3.20130502.ALL.panel"         # i don't know what this is! help!
+ONEKG_LABELS="${ROOT_DIR}/genome_data/1000g/integrated_call_samples_v3.20130502.ALL.panel"        
 
 # PCA model output directory (built once via fit_pca_1kg.py)
 PCA_DIR="${ROOT_DIR}/pca_model"
@@ -40,7 +43,7 @@ QUANTILES=1001
 MIN_VARIANTS=20
 
 # Python entry points (if you want to pin a venv)
-PYTHON="python"
+PYTHON="python3"
 
 # Scripts (paths relative to repo root)
 WEIGHTS_HARMONIZER="${ROOT_DIR}/scripts/analyses/weights_harmonize_b38.py"

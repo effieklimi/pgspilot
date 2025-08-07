@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# run_user.sh
+# user.sh
 # Dual-personality script:
 #  - On HOST: Acts as a Docker WRAPPER to launch the container.
 #  - In CONTAINER: Acts as the WORKER to run the pipeline.
@@ -15,56 +15,54 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
 
   echo "==> [HOST] Detected script running on host. Preparing Docker container..."
 
-  # 1. Argument and Sanity Checks
+  # --- START OF THE FIX ---
+  # 1. Make paths robust: Determine the project's true root directory,
+  #    regardless of where this script is called from.
+  #    This script is at .../scripts/pipeline/user.sh, so the root is 3 levels up.
+  THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+  PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
+  # --- END OF THE FIX ---
+
+  # 2. Argument and Sanity Checks
   if [[ $# -lt 1 ]]; then
     echo "Usage (on Host): $0 </path/to/your/file> [pipeline options...]"
     exit 1
   fi
   IN_FILE_PATH="$1"
-  PIPELINE_ARGS=("${@:2}") # Capture all other arguments to pass them to the container
+  PIPELINE_ARGS=("${@:2}")
 
-  # 2. Resolve absolute path to the input file and its directory.
-  #    This dependency-free method works on both macOS and Linux.
+  # 3. Resolve absolute path to the input file and its directory.
   if [[ ! -f "$IN_FILE_PATH" ]]; then
     echo "Error: Input file not found at '$IN_FILE_PATH'" >&2
     exit 1
   fi
-
-  ORIGINAL_PWD=$(pwd) # Save our starting directory
   INPUT_DIR_RAW=$(dirname "$IN_FILE_PATH")
   FILENAME=$(basename "$IN_FILE_PATH")
-  
-  cd "$INPUT_DIR_RAW" # Temporarily change to the input file's directory
-  ABS_INPUT_DIR=$(pwd) # Get the absolute path of that directory
-  cd "$ORIGINAL_PWD" # IMPORTANT: Go back to where we started
+  ABS_INPUT_DIR=$(cd -- "$INPUT_DIR_RAW" &> /dev/null && pwd)
 
-  # 3. Build Docker command and launch
-  echo "==> [HOST] Mounting '$ABS_INPUT_DIR' to /app/input"
+  # 4. Build Docker command and launch
+  echo "==> [HOST] Mounting '$ABS_INPUT_DIR' to /app/input_data"
   DOCKER_IMAGE="pgspilot"
 
-  # --- START of the fix ---
-  # Define the command and its mandatory arguments to be run inside the container
-  CMD_TO_RUN=(/app/scripts/pipeline/user.sh "/app/input/$FILENAME")
-
-  # If the PIPELINE_ARGS array is not empty, append its contents
+  CMD_TO_RUN=(/app/scripts/pipeline/user.sh "/app/input_data/$FILENAME")
   if [[ ${#PIPELINE_ARGS[@]} -gt 0 ]]; then
     CMD_TO_RUN+=("${PIPELINE_ARGS[@]}")
   fi
-  # --- END of the fix ---
 
+  # Now, use the reliable $PROJECT_ROOT variable for all mounts
   docker run --rm \
-    -e INSIDE_DOCKER=true \
-    -v "$ABS_INPUT_DIR:/app/input:ro" \
-    -v "$(pwd)/genome_data:/app/genome_data:ro" \
-    -v "$(pwd)/pca_model:/app/pca_model:ro" \
-    -v "$(pwd)/traits:/app/traits:ro" \
-    -v "$(pwd)/weights_hm:/app/weights_hm:ro" \
-    -v "$(pwd)/weights_raw:/app/weights_raw:ro" \
-    -v "$(pwd)/users:/app/users" \
-    -v "$(pwd)/calibration:/app/calibration" \
-    -v "$(pwd)/scripts:/app/scripts:ro" \
+    -e INSIDE_DOCKER=1 \
+    -v "$ABS_INPUT_DIR:/app/input_data" \
+    -v "${PROJECT_ROOT}/genome_data:/app/genome_data" \
+    -v "${PROJECT_ROOT}/pca_model:/app/pca_model" \
+    -v "${PROJECT_ROOT}/traits:/app/traits" \
+    -v "${PROJECT_ROOT}/weights_hm:/app/weights_hm" \
+    -v "${PROJECT_ROOT}/weights_raw:/app/weights_raw" \
+    -v "${PROJECT_ROOT}/users:/app/users" \
+    -v "${PROJECT_ROOT}/calibration:/app/calibration" \
+    -v "${PROJECT_ROOT}/scripts:/app/scripts:ro" \
     "$DOCKER_IMAGE" \
-    "${CMD_TO_RUN[@]}" # <-- Use the safely constructed command array here
+    "${CMD_TO_RUN[@]}"
 
   echo "✓ [HOST] Pipeline finished."
 
@@ -76,9 +74,8 @@ else
 
   echo "==> [CONTAINER] Script running inside Docker. Starting pipeline..."
 
-  # --- This is your original pipeline logic ---
 
-  # Source config from its fixed path inside the container
+  # --- This is your original pipeline logic ---
   source "/app/scripts/pipeline/config.sh"
 
   if [[ $# -lt 1 ]]; then
@@ -147,7 +144,7 @@ else
     mv -v "$CAND.tbi" "$FINAL_VCF.tbi"
     # Optional: Move the entire imputed/phased dirs for inspection
     mv -v "${IMPUTE_OUT_DIR}/imputed_dir" "${IMPUTE_OUT_DIR}/phased_dir" "$USER_DIR/"
-    rmdir "$IMPUTE_OUT_DIR" # Clean up the now-empty results folder
+    # rm -rf "$IMPUTE_OUT_DIR" # Clean up the now-empty results folder
   fi
 
   # 2) Sanity: required assets

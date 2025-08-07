@@ -3,14 +3,6 @@
 alt_fix.py  – replace missing ALT alleles ('.') in a VCF.gz using a pre-built
 SQLite lookup table.
 
-Project layout assumed
-├─ static_files/
-│   ├─ alt_alleles.db            (the lookup DB you built once)
-│   └─ scripts/
-│       └─ alt_fix.py            (this file)
-└─ <sample>_results/
-    └─ <sample>.vcf.gz           (VCF you want to fix)
-        <sample>.vcf.gz.tbi
 """
 
 import argparse, gzip, os, sqlite3, sys, time
@@ -30,9 +22,10 @@ def replace_alts(vcf_in, vcf_out, db_path, preview=5):
                 fout.write(line); continue
             total += 1
             f      = line.rstrip("\n").split("\t")
-            if f[4] == ".":                                    # ALT missing
+            if f[4] == ".":    
+                chrom = f[0].lstrip("chr") # ALT missing
                 cur.execute("SELECT alt FROM alt_alleles WHERE chrom=? AND pos=? AND ref=?",
-                            (f[0], int(f[1]), f[3]))
+                            (chrom, int(f[1]), f[3]))
                 row = cur.fetchone()
                 if row:
                     f[4] = row[0]; rep += 1
