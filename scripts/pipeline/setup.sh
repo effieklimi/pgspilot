@@ -29,8 +29,8 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
   echo "==> [HOST] Preparing PCA model setup..."
 
   # Detect project root (assumes this script lives in scripts/)
-  THIS_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-  PROJECT_ROOT="$(cd -- "${THIS_SCRIPT_DIR}/../" &>/dev/null && pwd)"
+  THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+  PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
 
   # Forward any CLI overrides to the inner call
   EXTRA_ARGS=("$@")

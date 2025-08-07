@@ -8,7 +8,7 @@ set -euo pipefail
 # fi
 
 # Find the directory of this script, so it can be run from anywhere.
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
 # 1) Run the PCA setup (in Docker via setup.sh)
 bash "${SCRIPT_DIR}/pipeline/setup.sh" --pcs 4 --max-snps 10000
