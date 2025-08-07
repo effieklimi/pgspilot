@@ -60,6 +60,7 @@ def with_chr_prefix(ch: str) -> str:
     return "chr" + ch
 
 def chrom_key(ch: str) -> int:
+    print(f"[*] Converting chromosome {ch} to key...")
     ch = with_chr_prefix(ch)
     tok = ch[3:]
     try:
@@ -74,6 +75,7 @@ def is_biallelic_snp(ref: str, alt: List[str]) -> bool:
     return (len(ref) == 1 and len(a) == 1 and ref in VALID_A and a in VALID_A and ref != a)
 
 def load_labels(path: str) -> pd.DataFrame:
+    print(f"[*] Loading labels from {path}...")
     df = pd.read_csv(path, sep=None, engine="python", dtype=str)
     df.columns = [c.strip().lower() for c in df.columns]
     # Accept sample or iid
@@ -88,6 +90,7 @@ def load_labels(path: str) -> pd.DataFrame:
     return df
 
 def open_vcf_for_chr(pattern: str, ch: str) -> Optional[VCF]:
+    print(f"[*] Opening VCF for chr {ch}...")
     path = pattern.replace("{chr}", ch)
     if not os.path.exists(path):
         # try without 'chr' prefix
@@ -100,6 +103,7 @@ def open_vcf_for_chr(pattern: str, ch: str) -> Optional[VCF]:
     return v
 
 def ensure_sample_order_same(vcfs: List[VCF]) -> List[str]:
+    print(f"[*] Ensuring sample order is the same across chromosomes...")
     # Use the first VCF as canonical
     base = [with_chr_prefix(s) for s in vcfs[0].samples]  # just to avoid accidental numbers? keep raw.
     for v in vcfs[1:]:
@@ -111,6 +115,7 @@ def iter_selected_variants(v: VCF,
                            keep_positions: Dict[int, Tuple[str,str]],
                            n_samples: int,
                            sample_index: Optional[np.ndarray]=None):
+    print(f"[*] Iterating selected variants...")
     """
     Iterate variants of a chromosome and yield selected ones as tuples:
     (pos, ref, alt, gt_float_array[n_samples], missing_frac)
@@ -149,6 +154,7 @@ def select_pca_sites(args, vcfs: List[VCF], label_samples: List[str]) -> pd.Data
     Scan autosomes, filter by MAF/missingness, and thin by distance until max_snps.
     Returns dataframe with columns: chr pos ref alt maf missing
     """
+    print(f"[*] Selecting PCA sites...")
     np.random.seed(args.random_seed)
 
     # Use sample subset in label order
@@ -225,6 +231,7 @@ def build_pca(args, vcfs: List[VCF], pca_sites: pd.DataFrame, label_df: pd.DataF
     Returns:
       means (M,), stds (M,), loadings (M,K), ref_scores_df (samples x PCs)
     """
+    print(f"[*] Building PCA model...")
     # Confirm sample order and subset to labeled samples
     all_samples = ensure_sample_order_same(vcfs)
     label_df = label_df[label_df["sample"].isin(all_samples)].copy()
@@ -350,6 +357,7 @@ def build_pca(args, vcfs: List[VCF], pca_sites: pd.DataFrame, label_df: pd.DataF
 # ---------------------- classifier ---------------------- #
 
 def train_classifier(ref_scores: pd.DataFrame, n_neighbors: int = 100):
+    print(f"[*] Training classifier with {n_neighbors} neighbors...")
     X = ref_scores[[c for c in ref_scores.columns if c.startswith("PC")]].values
     y = ref_scores["super_pop"].values
     le = LabelEncoder()
@@ -379,6 +387,8 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    
+    print(f"[*] Welcome to the PCA setup script!")
 
     # Open one VCF to sniff if uses 'chr' prefix
     probe = args.vcf_pattern.replace("{chr}", "1")
@@ -388,6 +398,7 @@ def main():
     vcfs = []
     for ch in AUTOSOMES:
         v = open_vcf_for_chr(args.vcf_pattern, ch)
+        print(f"[*] Ch {ch} samples")
         if v is None:
             v = open_vcf_for_chr(args.vcf_pattern, "chr"+ch)
         if v is None:

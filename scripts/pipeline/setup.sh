@@ -51,7 +51,7 @@ fi
 ###############################################################################
 echo "==> [CONTAINER] Executing PCA setup…"
 
-exec python3 /app/scripts/fit_pca_1kg.py \
+exec python3 -u /app/scripts/analyses/fit_pca_1kg.py \
   --vcf-pattern "${VCF_PATTERN}" \
   --labels      "${LABELS_PATH}" \
   --out         "${OUT_DIR}" \
