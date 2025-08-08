@@ -1,4 +1,7 @@
 genome_data/
 genome_data_old/
 users/
+pca_model/
 input_data/
+plink2
+vcf_subset

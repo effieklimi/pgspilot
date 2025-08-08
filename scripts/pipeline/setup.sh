@@ -13,14 +13,12 @@ set -Eeuo pipefail
 VCF_PATTERN="/app/genome_data/1000G/1kGP_high_coverage_Illumina.chr{chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
 LABELS_PATH="/app/scripts/helpers/integrated_call_samples_v3.20130502.ALL.panel"
 OUT_DIR="/app/pca_model"
+SITES_PATH="/app/pca_model/pca_sites.b38.tsv"
+PRUNED_PATH="/app/pca_model/pca_sites.b38.tsv"   # marker file for pruned panel
 
 # ---------- MVP defaults (can still be overridden via CLI) ----------
-PCS=2            # only the first 2 principal components
-MAX_SNPS=5000    # 10× smaller than full run
-THIN_KB=100      # looser LD pruning
-MAF=0.05
-MAX_MISSING=0.05
-RANDOM_SEED=1    # deterministic pilot
+PCS=4             # only the first 2 principal components
+RANDOM_SEED=42    # deterministic pilot
 
 ###############################################################################
 ### MODE 1: HOST (wrapper) ####################################################
@@ -37,6 +35,7 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
 
   echo "==> [HOST] Launching Docker container for PCA setup..."
   docker run --rm \
+    -m 48g --memory-swap -1 \
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
     pgspilot \
@@ -50,15 +49,17 @@ fi
 ### MODE 2: CONTAINER (worker) ###############################################
 ###############################################################################
 echo "==> [CONTAINER] Executing PCA setup…"
+bash "/app/scripts/pipeline/pruned_panel.sh"
 
+echo "==> [CONTAINER] Running per-ancestry MAF script..."
+bash "/app/scripts/pipeline/per_ancestry_maf.sh"
+
+echo "==> [CONTAINER] Running PCA setup..."
 exec python3 -u /app/scripts/analyses/fit_pca_1kg.py \
   --vcf-pattern "${VCF_PATTERN}" \
   --labels      "${LABELS_PATH}" \
   --out         "${OUT_DIR}" \
   --pcs         "${PCS}" \
-  --max-snps    "${MAX_SNPS}" \
-  --thin-kb     "${THIN_KB}" \
-  --maf         "${MAF}" \
-  --max-missing "${MAX_MISSING}" \
+  --sites       "${SITES_PATH}" \
   --random-seed "${RANDOM_SEED}" \
   "$@"

@@ -11,4 +11,4 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
 # 1) Run the PCA setup (in Docker via setup.sh)
-bash "${SCRIPT_DIR}/pipeline/setup.sh" --pcs 4 --max-snps 10000
+bash "${SCRIPT_DIR}/pipeline/setup.sh" --pcs 6

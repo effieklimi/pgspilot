@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     wget \
     bzip2 \
+    unzip \
     xz-utils \
     ca-certificates \
     samtools \
@@ -65,6 +66,16 @@ RUN pip3 install --no-cache-dir CrossMap \
     && echo "=== Testing CrossMap ===" \
     && CrossMap.py --help || python3 -m CrossMap --help || echo "CrossMap help failed but may still work"
 
+# --- Install PLINK 2 (Linux x86_64 static binary) ---
+# Pin a known-good build; update URL if you want a newer build later.
+ENV PLINK2_ZIP=plink2_linux_x86_64_20250806.zip
+RUN wget -q https://s3.amazonaws.com/plink2-assets/alpha6/${PLINK2_ZIP} \
+    && unzip -q ${PLINK2_ZIP} \
+    && mv plink2 /usr/local/bin/ \
+    && chmod +x /usr/local/bin/plink2 \
+    && rm -f ${PLINK2_ZIP} plink2.license plink2.md \
+    && /usr/local/bin/plink2 --version || /usr/local/bin/plink2 -v || echo "plink2 installed (version check non-fatal)"
+
 RUN pip3 install --no-cache-dir \
     numpy \
     pandas \
@@ -80,7 +91,8 @@ COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/pipeline/user.sh \
            /app/scripts/pipeline/prep_pgs.sh \
            /app/scripts/analyses/impute.sh \
-           /app/scripts/pipeline/setup.sh
+           /app/scripts/pipeline/setup.sh \
+           /app/scripts/pipeline/pruned_panel.sh
 
 # 5. Set the default command to run when the container starts interactively
 CMD ["/bin/bash"]
