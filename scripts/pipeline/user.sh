@@ -177,20 +177,20 @@ else
 
 
   # 3) Project user PCs and assign ancestry
-  # echo "==> Calling ancestry…"
-  # USER_PCS="$USER_DIR/user_pcs.tsv"
-  # python /app/scripts/analyses/assign_ancestry.py \
-  #   --user-pfile "$USER_PFILE" \
-  #   --out-ancestry "$USER_DIR/ancestry.tsv" \
-  #   --out-pcs "$USER_PCS" \
-  #   --pcs 6
+  echo "==> Calling ancestry…"
+  USER_PCS="$USER_DIR/user_pcs.tsv"
+  python /app/scripts/analyses/assign_ancestry.py \
+    --user-pfile "$USER_PFILE" \
+    --out-ancestry "$USER_DIR/ancestry.tsv" \
+    --out-pcs "$USER_PCS" \
+    --pcs 6
 
-  # SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
-  # if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
-  #   echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
-  #   exit 2
-  # fi
-  # echo "==> Ancestry: $SUBPOP"
+  SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
+  if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
+    echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
+    exit 2
+  fi
+  echo "==> Ancestry: $SUBPOP"
 
 
   # # 3) Score all PGS for that ancestry

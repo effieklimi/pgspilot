@@ -14,9 +14,26 @@ def run(cmd):
     return p
 
 def detect_score_col(df):
-    for c in ("SCORE1_SUM","SCORE1_AVG","SCORE"):
-        if c in df.columns: return c
-    raise SystemExit("[ERROR] SCORE column not found in .sscore")
+    cols = list(map(str, df.columns))
+    # Prefer *_SUM, but ignore dosage sum
+    sum_cols = [c for c in cols if c.endswith("_SUM") and c != "NAMED_ALLELE_DOSAGE_SUM"]
+    if sum_cols:
+        return sum_cols[0]
+    # Then *_AVG
+    avg_cols = [c for c in cols if c.endswith("_AVG")]
+    if avg_cols:
+        return avg_cols[0]
+    # Legacy fallbacks
+    for c in ("SCORE1_SUM","SCORE1_AVG","SCORE","SCORE1","BETA_SUM","BETA_AVG"):
+        if c in cols:
+            return c
+    # Last resort: anything starting with SCORE or BETA
+    for c in cols:
+        if c.startswith(("SCORE","BETA")):
+            return c
+    raise SystemExit("[ERROR] SCORE column not found in .sscore; got columns: " + ", ".join(cols))
+
+
 
 def main():
     ap = argparse.ArgumentParser(description="Project user onto prefit PCA and assign subpopulation.")
@@ -53,7 +70,7 @@ def main():
     try:
         std_prefix = os.path.join(work, "user_stdids")
         run(["plink2", "--pfile", args.user_pfile,
-             "--set-all-var-ids", "@:#:$r:$a", "--new-id-max-allele-len", "200", "truncate",
+             "--set-all-var-ids", "chr@:#:$r:$a", "--new-id-max-allele-len", "200", "truncate",
              "--make-pgen", "--out", std_prefix])
 
         # Build per-PC score files and score with PLINK2
@@ -73,8 +90,9 @@ def main():
 
             out_pref = os.path.join(work, f"pc{k+1}")
             run(["plink2", "--pfile", std_prefix,
-                 "--score", score_path, "1", "2", "3", "header-read", "no-mean-imputation",
-                 "--out", out_pref])
+                "--score", score_path, "1", "2", "3", "header-read", "no-mean-imputation",
+                "cols=+scoresums",   # <- guarantees SCORE1_SUM
+                "--out", out_pref])
 
             ssc = pd.read_csv(out_pref + ".sscore", sep=r"\s+")
             if iid is None:
@@ -82,7 +100,7 @@ def main():
             pcs_vals[k] = float(ssc[detect_score_col(ssc)].iloc[0]) + float(intercept[k])
 
         # Save user PCs
-        with open(args.out-pcs, "w") as g:
+        with open(args.out_pcs, "w") as g:
             g.write("sample_id" + "".join([f"\tPC{i+1}" for i in range(K)]) + "\n")
             g.write(iid + "".join([f"\t{pcs_vals[i]:.10g}" for i in range(K)]) + "\n")
 
@@ -111,7 +129,7 @@ def main():
             "distance_over_thr": float(ratio)
         }]).to_csv(args.out_ancestry, sep="\t", index=False)
 
-        print(f"[OK] Wrote {args.out-pcs} and {args.out-ancestry} (assigned={label})")
+        print(f"[OK] Wrote {args.out_pcs} and {args.out_ancestry} (assigned={label})")
 
     finally:
         shutil.rmtree(work, ignore_errors=True)
