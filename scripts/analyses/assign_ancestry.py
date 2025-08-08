@@ -1,52 +1,120 @@
 #!/usr/bin/env python3
-# assign_ancestry.py
-import argparse, pandas as pd, numpy as np
+# /app/scripts/analyses/call_ancestry.py
+import argparse, os, sys, tempfile, shutil, subprocess
+import numpy as np
+import pandas as pd
+
+PCA_DIR = "/app/pca_model"
+
+def run(cmd):
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        sys.stderr.write(p.stderr)
+        raise SystemExit(f"[ERROR] {' '.join(cmd)}\n{p.stderr}")
+    return p
+
+def detect_score_col(df):
+    for c in ("SCORE1_SUM","SCORE1_AVG","SCORE"):
+        if c in df.columns: return c
+    raise SystemExit("[ERROR] SCORE column not found in .sscore")
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ref-pcs", required=True)   # sample_id, subpop, PC1..PCn (reference)
-    ap.add_argument("--user-pcs", required=True)  # sample_id, PC1..PCn (users, projected on same basis)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--npc", type=int, default=6)
-    ap.add_argument("--reject-quantile", type=float, default=0.99,
-                    help="Reject if distance to assigned centroid exceeds this within-pop quantile")
+    ap = argparse.ArgumentParser(description="Project user onto prefit PCA and assign subpopulation.")
+    ap.add_argument("--user-pfile", required=True, help="User PLINK2 PFILE prefix (no extension)")
+    ap.add_argument("--out-ancestry", required=True, help="TSV: sample_id,assigned_subpop,distance_over_thr")
+    ap.add_argument("--out-pcs", required=True, help="TSV: sample_id,PC1..PCk")
+    ap.add_argument("--pcs", type=int, default=6)
+    ap.add_argument("--reject-quantile", type=float, default=0.99)
     args = ap.parse_args()
 
-    ref = pd.read_csv(args.ref_pcs, sep="\t")
-    usr = pd.read_csv(args.user_pcs, sep="\t")
+    # Load PCA artifacts (trained by your fit_pca_1kg.py)
+    sites = pd.read_csv(os.path.join(PCA_DIR, "pca_sites.b38.tsv"), sep="\t", dtype=str).rename(columns=str.lower)
+    for c in ("chr","pos","ref","alt"):
+        if c not in sites.columns:
+            raise SystemExit("[ERROR] pca_sites.b38.tsv missing chr/pos/ref/alt")
 
-    pcs = [f"PC{i}" for i in range(1, args.npc+1)]
-    for c in pcs:
-        if c not in ref.columns or c not in usr.columns:
-            raise SystemExit(f"Missing {c} in input")
+    means = np.load(os.path.join(PCA_DIR, "ref_means.npy"))  # = 2p, length M
+    stds  = np.load(os.path.join(PCA_DIR, "ref_stds.npy"))   # sqrt(2p(1-p)), length M
+    L     = np.load(os.path.join(PCA_DIR, "loadings.npy"))   # shape M x K
+    ref   = pd.read_csv(os.path.join(PCA_DIR, "ref_scores.csv"))  # sample, super_pop, PC1..PCK
+    ref = ref.rename(columns=str.lower).rename(columns={"super_pop":"subpop"})
+    pcs_cols = [c for c in ref.columns if c.startswith("pc")]
+    K = min(args.pcs, len(pcs_cols), L.shape[1])
+    M = L.shape[0]
+    if len(means)!=M or len(stds)!=M:
+        raise SystemExit("[ERROR] means/stds length mismatch with loadings")
 
-    # Centroids per subpop
-    centroids = ref.groupby("subpop")[pcs].mean()
+    # Build scoring betas and intercepts so PLINK2 can do the dot products on raw dosages
+    betas = L[:, :K] / stds[:, None]                      # M x K
+    intercept = -(betas * means[:, None]).sum(axis=0)     # length K
 
-    # Within-pop distance distribution (for rejection threshold)
-    dists = []
-    for sp, grp in ref.groupby("subpop"):
-        c = centroids.loc[sp].values
-        d = np.linalg.norm(grp[pcs].values - c, axis=1)
-        thr = np.quantile(d, args.reject_quantile)
-        dists.append({"subpop": sp, "thr": thr})
-    thr_df = pd.DataFrame(dists).set_index("subpop")
+    # Standardize IDs on the user set (chr:pos:ref:alt)
+    work = tempfile.mkdtemp(prefix="ancestry_")
+    try:
+        std_prefix = os.path.join(work, "user_stdids")
+        run(["plink2", "--pfile", args.user_pfile,
+             "--set-all-var-ids", "@:#:$r:$a", "--new-id-max-allele-len", "200", "truncate",
+             "--make-pgen", "--out", std_prefix])
 
-    out_rows = []
-    for _, r in usr.iterrows():
-        x = r[pcs].values.astype(float)
-        # nearest centroid
-        diffs = centroids[pcs].values - x
-        d = np.linalg.norm(diffs, axis=1)
-        idx = d.argmin()
-        sp = centroids.index[idx]
-        dist = d[idx]
-        pct = (dist / thr_df.loc[sp, "thr"]) if thr_df.loc[sp, "thr"] > 0 else np.inf
-        label = sp if pct <= 1.0 else "Uncertain"
-        out_rows.append({"sample_id": r["sample_id"], "assigned_subpop": label,
-                         "distance_over_thr": float(pct)})
+        # Build per-PC score files and score with PLINK2
+        ids = (sites["chr"].where(sites["chr"].str.startswith("chr"), "chr"+sites["chr"])
+               + ":" + sites["pos"] + ":" + sites["ref"] + ":" + sites["alt"]).tolist()
+        a1s = sites["alt"].str.upper().tolist()
 
-    pd.DataFrame(out_rows).to_csv(args.out, sep="\t", index=False)
+        pcs_vals = np.zeros(K, dtype=float)
+        iid = None
+
+        for k in range(K):
+            score_path = os.path.join(work, f"pc{k+1}.score.tsv")
+            with open(score_path, "w") as f:
+                f.write("ID\tA1\tBETA\n")
+                for i in range(M):
+                    f.write(f"{ids[i]}\t{a1s[i]}\t{betas[i, k]:.10g}\n")
+
+            out_pref = os.path.join(work, f"pc{k+1}")
+            run(["plink2", "--pfile", std_prefix,
+                 "--score", score_path, "1", "2", "3", "header-read", "no-mean-imputation",
+                 "--out", out_pref])
+
+            ssc = pd.read_csv(out_pref + ".sscore", sep=r"\s+")
+            if iid is None:
+                iid = ssc["IID"].iloc[0]
+            pcs_vals[k] = float(ssc[detect_score_col(ssc)].iloc[0]) + float(intercept[k])
+
+        # Save user PCs
+        with open(args.out-pcs, "w") as g:
+            g.write("sample_id" + "".join([f"\tPC{i+1}" for i in range(K)]) + "\n")
+            g.write(iid + "".join([f"\t{pcs_vals[i]:.10g}" for i in range(K)]) + "\n")
+
+        # Ancestry assignment (nearest centroid; reject at quantile)
+        ref_use = ref[["subpop"] + [f"pc{i+1}" for i in range(K)]].copy()
+        centroids = ref_use.groupby("subpop").mean()
+
+        # rejection thresholds per subpop
+        thr = {}
+        for sp, grp in ref_use.groupby("subpop"):
+            c = centroids.loc[sp].values
+            d = np.linalg.norm(grp.iloc[:, 1:].values - c, axis=1)
+            thr[sp] = np.quantile(d, args.reject_quantile)
+
+        # assign
+        x = pcs_vals
+        dists = np.linalg.norm(centroids.values - x, axis=1)
+        idx = dists.argmin()
+        sp  = centroids.index[idx]
+        ratio = dists[idx] / (thr[sp] if thr[sp] > 0 else np.inf)
+        label = sp if ratio <= 1.0 else "Uncertain"
+
+        pd.DataFrame([{
+            "sample_id": iid,
+            "assigned_subpop": label,
+            "distance_over_thr": float(ratio)
+        }]).to_csv(args.out_ancestry, sep="\t", index=False)
+
+        print(f"[OK] Wrote {args.out-pcs} and {args.out-ancestry} (assigned={label})")
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

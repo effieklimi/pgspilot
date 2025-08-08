@@ -15,10 +15,6 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
 
   echo "==> [HOST] Detected script running on host. Preparing Docker container..."
 
-  # --- START OF THE FIX ---
-  # 1. Make paths robust: Determine the project's true root directory,
-  #    regardless of where this script is called from.
-  #    This script is at .../scripts/pipeline/user.sh, so the root is 3 levels up.
   THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
   PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
   # --- END OF THE FIX ---
@@ -111,26 +107,21 @@ else
   fi
 
   # All paths from config.sh are now correct inside the container (e.g., /app/users)
-  USER_DIR="$USERS_DIR/$STEM"
-  mkdir -p "$USER_DIR"
-
-  echo "==> [CONTAINER] Input: $INPUT"
-  echo "==> [CONTAINER] STEM:  $STEM"
-  echo "==> [CONTAINER] Out:   $USER_DIR"
+  USER_DIR="/app/users/$STEM"; mkdir -p "$USER_DIR"
+  echo "==> Input: $INPUT"
+  echo "==> STEM:  $STEM"
+  echo "==> Out:   $USER_DIR"
 
   # 1) Impute if needed
   FINAL_VCF="$USER_DIR/${STEM}_imputed_all.vcf.gz"
   if [[ "$INPUT" == *".vcf.gz" ]]; then
     echo "==> [CONTAINER] Using provided VCF (skipping imputation)"
     if [[ ! -f "$FINAL_VCF" ]]; then
-      # Copy into the standard location (keep user dir self-contained)
       cp -v "$INPUT" "$FINAL_VCF"
       tabix -f -p vcf "$FINAL_VCF" || true
     fi
   else
     echo "==> [CONTAINER] Running imputation…"
-    # This calls the imputation script, which is found at the path defined in config.sh
-    # e.g., IMPUTE_SH="/app/scripts/impute.sh"
     "$IMPUTE_SH" "$INPUT"
 
     # The imputation script creates its output in a subdir of /app/users/
@@ -144,35 +135,42 @@ else
     mv -v "$CAND.tbi" "$FINAL_VCF.tbi"
     # Optional: Move the entire imputed/phased dirs for inspection
     mv -v "${IMPUTE_OUT_DIR}/imputed_dir" "${IMPUTE_OUT_DIR}/phased_dir" "$USER_DIR/"
-    # rm -rf "$IMPUTE_OUT_DIR" # Clean up the now-empty results folder
+
+
+    # 2) Project user PCs and assign ancestry
+    echo "==> Calling ancestry…"
+    USER_PCS="$USER_DIR/user_pcs.tsv"
+    python /app/scripts/analyses/call_ancestry.py \
+      --user-pfile "$USER_PFILE" \
+      --out-ancestry "$USER_DIR/ancestry.tsv" \
+      --out-pcs "$USER_PCS" \
+      --pcs 6
+
+    SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
+    if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
+      echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
+      exit 2
+    fi
+    echo "==> Ancestry: $SUBPOP"
+
+
+    # 3) Score all PGS for that ancestry
+    SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
+    bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
+
+    # 4) Collect + standardize → JSON
+    STD_TABLE="/app/weights_hm/pgs_standardization.tsv"
+    OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
+    python /app/scripts/analyses/collect_scores.py \
+      --results-dir "$SCORES_DIR" \
+      --standardization "$STD_TABLE" \
+      --user-iid "$STEM" \
+      --subpop "$SUBPOP" \
+      --out-json "$OUT_JSON"
+
+    echo "✓ Done. Results: $OUT_JSON"
+
   fi
 
-  # 2) Sanity: required assets
-  # for req in "$FINAL_VCF" "$PCA_DIR/loadings.npy" "$TRAITS_DIR" "$WEIGHTS_HM_DIR" "$CALIB_DIR"; do
-  #   [[ -e "$req" ]] || { echo "✗ Missing required input/asset: $req" >&2; exit 1; }
-  # done
 
-  # # 3) Score + report
-  # echo "==> [CONTAINER] Scoring & reporting…"
-  # SCORER_ARGS=()
-  # [[ -n "$ONLY_TRAITS" ]] && SCORER_ARGS+=(--only-traits "$ONLY_TRAITS")
-  # [[ -n "$COVERAGE_THRESH" ]] && SCORER_ARGS+=(--coverage-thresh "$COVERAGE_THRESH")
-
-  # $PYTHON "$SCORER" \
-  #   --vcf "$FINAL_VCF" \
-  #   --pca "$PCA_DIR" \
-  #   --traits_dir "$TRAITS_DIR" \
-  #   --weights_dir "$WEIGHTS_HM_DIR" \
-  #   --calib_dir "$CALIB_DIR" \
-  #   --out_dir "$USER_DIR" \
-  #   --report-md \
-  #   "${SCORER_ARGS[@]}"
-
-  echo "CONTAINER: Done."
-  echo "CONTAINER: Imputation finished successfully."
-  echo "Imputed VCF located at: $FINAL_VCF"
-  # echo "  Ancestry JSON:    $USER_DIR/ancestry.json"
-  # echo "  All scores JSON:  $USER_DIR/scores_all.json"
-  # echo "  Per-trait JSONs:  $USER_DIR/scores_<trait>.json"
-  # echo "  Reports:          $USER_DIR/report_<trait>.md"
 fi
