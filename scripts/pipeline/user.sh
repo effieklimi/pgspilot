@@ -114,63 +114,53 @@ else
 
   # 1) Impute if needed
   FINAL_VCF="$USER_DIR/${STEM}_imputed_all.vcf.gz"
-  if [[ "$INPUT" == *".vcf.gz" ]]; then
+
+  if [[ $INPUT == *.vcf.gz ]]; then
     echo "==> [CONTAINER] Using provided VCF (skipping imputation)"
-    if [[ ! -f "$FINAL_VCF" ]]; then
-      cp -v "$INPUT" "$FINAL_VCF"
-      tabix -f -p vcf "$FINAL_VCF" || true
-    fi
+    cp -v "$INPUT" "$FINAL_VCF"
+    tabix -f -p vcf "$FINAL_VCF" || true
   else
     echo "==> [CONTAINER] Running imputation…"
-    "$IMPUTE_SH" "$INPUT"
+    OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
 
-    # The imputation script creates its output in a subdir of /app/users/
-    IMPUTE_OUT_DIR="/app/users/${STEM}_results"
-    CAND="${IMPUTE_OUT_DIR}/${STEM}_imputed_all.vcf.gz"
-
-    [[ -f "$CAND" ]] || { echo "✗ Could not find imputation output: $CAND" >&2; exit 1; }
-
-    echo "==> [CONTAINER] Moving imputation results to final user directory."
-    mv -v "$CAND" "$FINAL_VCF"
-    mv -v "$CAND.tbi" "$FINAL_VCF.tbi"
-    # Optional: Move the entire imputed/phased dirs for inspection
-    mv -v "${IMPUTE_OUT_DIR}/imputed_dir" "${IMPUTE_OUT_DIR}/phased_dir" "$USER_DIR/"
-
-
-    # 2) Project user PCs and assign ancestry
-    echo "==> Calling ancestry…"
-    USER_PCS="$USER_DIR/user_pcs.tsv"
-    python /app/scripts/analyses/call_ancestry.py \
-      --user-pfile "$USER_PFILE" \
-      --out-ancestry "$USER_DIR/ancestry.tsv" \
-      --out-pcs "$USER_PCS" \
-      --pcs 6
-
-    SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
-    if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
-      echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
-      exit 2
-    fi
-    echo "==> Ancestry: $SUBPOP"
-
-
-    # 3) Score all PGS for that ancestry
-    SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
-    bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
-
-    # 4) Collect + standardize → JSON
-    STD_TABLE="/app/weights_hm/pgs_standardization.tsv"
-    OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
-    python /app/scripts/analyses/collect_scores.py \
-      --results-dir "$SCORES_DIR" \
-      --standardization "$STD_TABLE" \
-      --user-iid "$STEM" \
-      --subpop "$SUBPOP" \
-      --out-json "$OUT_JSON"
-
-    echo "✓ Done. Results: $OUT_JSON"
-
+    # sanity: ensure final file exists and is indexed
+    [[ -f "$FINAL_VCF" ]] || { echo "✗ Could not find expected output: $FINAL_VCF" >&2; exit 1; }
+    [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
   fi
 
+
+
+  # # 2) Project user PCs and assign ancestry
+  # echo "==> Calling ancestry…"
+  # USER_PCS="$USER_DIR/user_pcs.tsv"
+  # python /app/scripts/analyses/call_ancestry.py \
+  #   --user-pfile "$USER_PFILE" \
+  #   --out-ancestry "$USER_DIR/ancestry.tsv" \
+  #   --out-pcs "$USER_PCS" \
+  #   --pcs 6
+
+  # SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
+  # if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
+  #   echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
+  #   exit 2
+  # fi
+  # echo "==> Ancestry: $SUBPOP"
+
+
+  # # 3) Score all PGS for that ancestry
+  # SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
+  # bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
+
+  # # 4) Collect + standardize → JSON
+  # STD_TABLE="/app/weights_hm/pgs_standardization.tsv"
+  # OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
+  # python /app/scripts/analyses/collect_scores.py \
+  #   --results-dir "$SCORES_DIR" \
+  #   --standardization "$STD_TABLE" \
+  #   --user-iid "$STEM" \
+  #   --subpop "$SUBPOP" \
+  #   --out-json "$OUT_JSON"
+
+  # echo "✓ Done. Results: $OUT_JSON"
 
 fi
