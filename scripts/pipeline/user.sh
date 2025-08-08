@@ -112,28 +112,74 @@ else
   echo "==> STEM:  $STEM"
   echo "==> Out:   $USER_DIR"
 
-  # 1) Impute if needed
+  # 1) Impute if needed (but reuse if already exists)
   FINAL_VCF="$USER_DIR/${STEM}_imputed_all.vcf.gz"
 
-  if [[ $INPUT == *.vcf.gz ]]; then
-    echo "==> [CONTAINER] Using provided VCF (skipping imputation)"
-    cp -v "$INPUT" "$FINAL_VCF"
-    tabix -f -p vcf "$FINAL_VCF" || true
-  else
-    echo "==> [CONTAINER] Running imputation…"
-    OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
-
-    # sanity: ensure final file exists and is indexed
-    [[ -f "$FINAL_VCF" ]] || { echo "✗ Could not find expected output: $FINAL_VCF" >&2; exit 1; }
+  if [[ -f "$FINAL_VCF" ]]; then
+    echo "==> [CONTAINER] Found existing FINAL_VCF: $FINAL_VCF (skipping imputation)"
+    # ensure it's indexed
     [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
+  else
+    if [[ $INPUT == *.vcf.gz ]]; then
+      echo "==> [CONTAINER] Using provided VCF (skipping imputation)"
+      cp -v "$INPUT" "$FINAL_VCF"
+      tabix -f -p vcf "$FINAL_VCF" || true
+    else
+      echo "==> [CONTAINER] Running imputation…"
+      OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
+
+      # sanity: ensure final file exists and is indexed
+      [[ -f "$FINAL_VCF" ]] || { echo "✗ Could not find expected output: $FINAL_VCF" >&2; exit 1; }
+      [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
+    fi
+  fi
+
+  # 2) Preparing PLINK2 PFILE from imputed VCF…
+  VCF_TO_PFILE_SH="/app/scripts/pipeline/vcf_to_pfile.sh"
+
+  # Optional knobs for filtering; comment out or tweak as desired
+  INFO_KEY="${IMP_INFO_KEY:-}"        # e.g., R2, INFO, or IMPINFO; leave empty to auto-detect
+  INFO_MIN="${IMP_INFO_MIN:-0.8}"     # threshold for the chosen INFO key
+  KEEP_UNFILTERED="${KEEP_FILTERED:-0}"  # 1 to skip bcftools filtering
+
+  USER_PFILE="$USER_DIR/pfiles/user"
+
+  have_pfiles() {
+    local pref="$1"
+    # All three exist and are non-empty?
+    [[ -s "${pref}.pgen" && -s "${pref}.pvar" && -s "${pref}.psam" ]] || return 1
+    # .pvar has at least 1 variant row
+    local nvar
+    nvar=$(grep -vc '^#' "${pref}.pvar" || echo 0)
+    [[ "$nvar" -gt 0 ]] || return 1
+    # If we know the source VCF, ensure pfiles are not older than it
+    if [[ -n "${FINAL_VCF:-}" && -f "$FINAL_VCF" ]]; then
+      [[ "${pref}.pgen" -nt "$FINAL_VCF" && "${pref}.pvar" -nt "$FINAL_VCF" && "${pref}.psam" -nt "$FINAL_VCF" ]] || return 1
+    fi
+    return 0
+  }
+
+  if have_pfiles "$USER_PFILE"; then
+    echo "==> [CONTAINER] Found existing PFILE trio at ${USER_PFILE}.* (reusing)"
+  else
+    echo "==> [CONTAINER] Building PFILE trio from $FINAL_VCF"
+    mkdir -p "$(dirname "$USER_PFILE")"
+    if [[ "$KEEP_UNFILTERED" -eq 1 ]]; then
+      "$VCF_TO_PFILE_SH" --vcf "$FINAL_VCF" --out-prefix "$USER_PFILE" \
+        ${INFO_KEY:+--info-key "$INFO_KEY"} ${INFO_MIN:+--info-min "$INFO_MIN"} \
+        --keep-unfiltered >/dev/null
+    else
+      "$VCF_TO_PFILE_SH" --vcf "$FINAL_VCF" --out-prefix "$USER_PFILE" \
+        ${INFO_KEY:+--info-key "$INFO_KEY"} ${INFO_MIN:+--info-min "$INFO_MIN"} >/dev/null
+    fi
   fi
 
 
 
-  # # 2) Project user PCs and assign ancestry
+  # 3) Project user PCs and assign ancestry
   # echo "==> Calling ancestry…"
   # USER_PCS="$USER_DIR/user_pcs.tsv"
-  # python /app/scripts/analyses/call_ancestry.py \
+  # python /app/scripts/analyses/assign_ancestry.py \
   #   --user-pfile "$USER_PFILE" \
   #   --out-ancestry "$USER_DIR/ancestry.tsv" \
   #   --out-pcs "$USER_PCS" \

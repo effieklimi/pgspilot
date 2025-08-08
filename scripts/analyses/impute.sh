@@ -408,7 +408,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 
 
   ### ─────────────────────────── 4. Eagle phasing ────────────────────────────###
-  for CHR in {21..22}; do
+  for CHR in {1..22}; do
     REF_BCF="${REF_DIR_EAGLE}/1000GP_chr${CHR}.bcf"
     [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
 
@@ -497,7 +497,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
   done
 
 ### ─────────────────────────── 5. Beagle imputation ────────────────────────###
-for CHR in {21..22}; do 
+for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1000GP_chr${CHR}.bref3"
   MAP="${MAP_DIR_BEAGLE}/beagle_chr${CHR}_b38.map"
@@ -534,7 +534,7 @@ echo "==> indexing and concatenating imputed chromosomes"
 LIST=$(mktemp)
 missing_flag=0
 
-for CHR in {21..22}; do
+for CHR in {1..22}; do
   VC="${IMPUTED_DIR}/${STEM}_imputed_chr${CHR}.vcf.gz"
   if [[ ! -f "$VC" ]]; then
     echo "✗ Missing imputed VCF for chr${CHR}: $VC" >&2

@@ -11,4 +11,4 @@ fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
 # 1) Run the PCA setup (in Docker via setup.sh)
-bash "${SCRIPT_DIR}/pipeline/qc_genome.sh" 
+bash "${SCRIPT_DIR}/pipeline/qc_genome.sh" "$@"
