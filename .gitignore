@@ -5,3 +5,5 @@ pca_model/
 input_data/
 plink2
 vcf_subset
+weights_hm/
+weights_raw/

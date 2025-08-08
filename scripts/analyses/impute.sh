@@ -22,6 +22,20 @@ set -Eeuo pipefail
 [[ "${DEBUG:-}" == 1 ]] && set -x   # run pipeline with DEBUG=1 for verbose log
 exec 2>&1  
 
+### --- START: DEBUG HELPER FUNCTION ---
+# This function will count the number of data records (lines without '#') in a VCF file.
+count_vcf_records() {
+  local vcf_file="$1"
+  local description="$2"
+  local count
+  if [[ ! -f "$vcf_file" ]]; then
+    echo "  [DEBUG] ✗ File not found for counting: $vcf_file"
+    return
+  fi
+  # Use bcftools view -H to get only data lines, then count them.
+  count=$(bcftools view -H "$vcf_file" | wc -l)
+  echo "  [DEBUG] ✓ Records in $description ($vcf_file): $count"
+}
 
 ### --- QC ANALYSIS FUNCTION ---
 run_qc_analysis() {
@@ -209,8 +223,13 @@ REF_DIR_BEAGLE="${ROOT_DIR}/genome_data/ref_brefs_b38"
 MAP_DIR_BEAGLE="${ROOT_DIR}/genome_data/beagle_maps_b38"
 
 # Debug: Check if key files exist
+echo "==> Checking key file paths:"
 echo "  CHAIN: $CHAIN $([ -f "$CHAIN" ] && echo "✓" || echo "✗")"
 echo "  MAP_DIR_EAGLE: $MAP_DIR_EAGLE $([ -d "$MAP_DIR_EAGLE" ] && echo "✓" || echo "✗")"
+if [ -d "$MAP_DIR_EAGLE" ]; then
+  echo "  Files in MAP_DIR_EAGLE:"
+  ls -la "$MAP_DIR_EAGLE/" | head -5
+fi
 
 # ---- per-sample folders & files ------------------------------------------- #
 OUT_DIR="${ROOT_DIR}/users/${STEM}"
@@ -268,145 +287,214 @@ echo "==> Detected/selected input build: GRCh${INPUT_BUILD}"
 ### ─────────────────── 3. TSV→VCF and (conditional) liftover ─────────────###
 if [[ "$INPUT_BUILD" == 37 ]]; then
 
-  # 1. TSV → chr-prefixed VCF (build37)
-  echo "Pre-processing your genome"
+  # 1) TSV → chr-prefixed VCF (build37)
+  echo "==> Pre-processing TSV to add 'chr' prefix..."
   TEMP_TSV_GZ="${OUT_DIR}/temp_with_chr.tsv.gz"
   zcat "$RAW_GZ" \
     | awk 'BEGIN{OFS="\t"} /^#/ {print; next} {$2="chr"$2; print}' \
     | bgzip -c > "$TEMP_TSV_GZ"
   
+  echo "==> Converting TSV → VCF (build37)"
   bcftools convert --tsv2vcf "$TEMP_TSV_GZ" -f "$FASTA_37" -s "$STEM" -Oz -o "$VCF_CHR_GZ"
+
   rm "$TEMP_TSV_GZ"
   tabix -f -p vcf "$VCF_CHR_GZ"
+  count_vcf_records "$VCF_CHR_GZ" "Initial VCF (chr-prefix)"
 
-  # 2. Patch missing ALT alleles
-  echo "Patching missing alternate alleles"
+  # 2) QC raw conversion
+  echo "==> QC: initial_conversion"
+  run_qc_analysis "$VCF_CHR_GZ" "initial_conversion" "$QC_DIR"
+
+  # 3) Patch missing ALT alleles
+  echo "==> Patching missing ALT alleles"
   ALT_DB="${ROOT_DIR}/genome_data/alt_alleles.db"
   [[ -f "$ALT_DB" ]] || { echo "✗ Missing $ALT_DB"; exit 1; }
-  python "${ROOT_DIR}/scripts/helpers/alt_fix.py" --db "$ALT_DB" "$VCF_CHR_GZ"
+  python scripts/helpers/alt_fix.py --db "$ALT_DB" "$VCF_CHR_GZ"
   [[ -f "$RAW_VCF" ]] || { echo "✗ Expected $RAW_VCF"; exit 1; }
+  count_vcf_records "$RAW_VCF" "VCF after alt_fix"
 
-  # 3. Liftover to GRCh38 (still chr-prefixed)
-  echo "Switching to the latest human genome assembly"
+  # 4) Liftover to GRCh38 (still chr-prefixed)
+  echo "==> CrossMap liftover (chr-prefix contigs)"
   CrossMap vcf "$CHAIN" "$RAW_VCF" "$FASTA_38" "$LIFT_VCF"
-  # Sorting lifted VCF (chr-prefix):
+  lift_count=$(grep -vc '^#' "$LIFT_VCF")
+  echo "  [DEBUG] Lifted records: $lift_count"
+
+  # 5) Sort & index lifted VCF
+  echo "==> Sorting lifted VCF (chr-prefix)"
   bcftools sort -Oz -o "$CHR_VCF" "$LIFT_VCF"
   tabix -f -p vcf "$CHR_VCF"
+  count_vcf_records "$CHR_VCF" "Post-liftover VCF (chr-prefixed)"
+
   debug_vcf "$CHR_VCF"
+  
+  # 6) QC post-lift
+  echo "==> QC: post_liftover"
   run_qc_analysis "$CHR_VCF" "post_liftover" "$QC_DIR"
-  # Replace contig header with hg38 lengths 
-  # Re-headering $CHR_VCF with hg38 contig lengths
+
+  # --- 7) Replace contig header with hg38 lengths ---------------------------
+  echo "==> Re-headering $CHR_VCF with hg38 contig lengths"
   REHEADERED="${CHR_VCF%.vcf.gz}.reheadered.vcf.gz"
+
   # -f pulls contig names & lengths from the .fai; output goes to stdout
   bcftools reheader -f "${FASTA_38}.fai" "$CHR_VCF" \
     | bcftools view -Oz -o "$REHEADERED" -
+  
   debug_vcf "$REHEADERED"
+
   tabix -f -p vcf "$REHEADERED"
   mv "$REHEADERED"        "$CHR_VCF"
   mv "${REHEADERED}.tbi"  "$CHR_VCF.tbi"
+  echo "  ✓ Header replaced and indexed: $CHR_VCF"
 
-  # 4. Strip ambiguous SNPs before phasing
-  echo "Removing strand-ambiguous SNPs" # (A/T, C/G) 
+  # 8) Strip ambiguous SNPs before phasing
+  echo "==> Removing strand-ambiguous (A/T, C/G) SNPs"
   FILTERED_VCF="${OUT_DIR}/${STEM}_stranded_clean.vcf.gz"
   bcftools view -e '( REF="A" && ALT="T" ) || ( REF="T" && ALT="A" ) || ( REF="C" && ALT="G" ) || ( REF="G" && ALT="C" )' \
     -Oz -o "$FILTERED_VCF" "$CHR_VCF"
+
   debug_vcf "$FILTERED_VCF"
+
   tabix -f -p vcf "$FILTERED_VCF"
   mv "$FILTERED_VCF" "$CHR_VCF"
   mv "${FILTERED_VCF}.tbi"  "$CHR_VCF.tbi"
+  count_vcf_records "$CHR_VCF" "Strand-cleaned VCF"
+
+  # 9) Final pre-imputation QC
+  echo "==> QC: pre_imputation"
   run_qc_analysis "$CHR_VCF" "pre_imputation" "$QC_DIR"
 
-elif [[ "$INPUT_BUILD" == 38 ]]; then
-  echo "Pre-processing your genome"
-  TEMP_TSV_GZ="${OUT_DIR}/temp_with_chr.tsv.gz"
-  zcat "$RAW_GZ" | \
-    awk 'BEGIN{OFS="\t"} /^#/ {print; next} !/^#/ {$2="chr"$2; print}' | \
-    bgzip -c > "$TEMP_TSV_GZ"
-  bcftools convert \
-    --tsv2vcf "$TEMP_TSV_GZ" \
-    -f "$FASTA_38" \
-    -s "$STEM" \
-    -Oz -o "$CHR_VCF" \
-    2>"${OUT_DIR}/${STEM}.tsv2vcf.b38.log"
-  rm "$TEMP_TSV_GZ"
-  tabix -f -p vcf "$CHR_VCF"
-  run_qc_analysis "$CHR_VCF" "initial_conversion" "$QC_DIR"
 
-  # 2. Patch missing ALT alleles
-  echo "Patching missing alternate alleles"
-  ALT_DB="${ROOT_DIR}/genome_data/alt_alleles.db"
-  [[ -f "$ALT_DB" ]] || { echo "Missing $ALT_DB"; exit 1; }
-  python "${ROOT_DIR}/scripts/helpers/alt_fix.py" --db "$ALT_DB" "$CHR_VCF"
-  [[ -f "$RAW_VCF" ]] || { echo "Expected $RAW_VCF"; exit 1; }
+  elif [[ "$INPUT_BUILD" == 38 ]]; then
+    echo "==> Pre-processing TSV to add 'chr' prefix (build38)…"
+    TEMP_TSV_GZ="${OUT_DIR}/temp_with_chr.tsv.gz"
+    zcat "$RAW_GZ" | \
+      awk 'BEGIN{OFS="\t"} /^#/ {print; next} !/^#/ {$2="chr"$2; print}' | \
+      bgzip -c > "$TEMP_TSV_GZ"
 
-  # 3. Normalizing and selecting primary contigs
-  echo "Preparation and quality control before phasing"
-  bcftools norm "$CHR_VCF" -Oz -o "$PRIM_VCF"
-  tabix -f -p vcf "$PRIM_VCF"
-  run_qc_analysis "$PRIM_VCF" "pre_imputation" "$QC_DIR"
+    echo "==> TSV → VCF (build38) using pre-processed TSV"
+    bcftools convert \
+      --tsv2vcf "$TEMP_TSV_GZ" \
+      -f "$FASTA_38" \
+      -s "$STEM" \
+      -Oz -o "$CHR_VCF" \
+      2>"${OUT_DIR}/${STEM}.tsv2vcf.b38.log"
+    rm "$TEMP_TSV_GZ"
+    tabix -f -p vcf "$CHR_VCF"
+    count_vcf_records "$CHR_VCF" "Initial VCF (build38)"
 
-else
-  echo "This genome build is not supported: $INPUT_BUILD"
-  exit 1
-fi
+    echo "==> Running QC on initial build38 VCF…"
+    run_qc_analysis "$CHR_VCF" "initial_conversion" "$QC_DIR"
+
+    ALT_DB="${ROOT_DIR}/static_files/alt_alleles.db"
+    echo "==> patch missing ALT alleles"
+    python "${ROOT_DIR}/scripts/helpers/alt_fix.py" --db "$ALT_DB" "$CHR_VCF"
+    count_vcf_records "${STEM}.alt.vcf.gz" "VCF after alt_fix (build38)"
+
+    echo "==> Running QC on ALT-patched VCF…"
+    run_qc_analysis "${STEM}.alt.vcf.gz" "post_alt_fix" "$QC_DIR"
+
+    echo "==> Normalizing and selecting primary contigs"
+    bcftools norm "$CHR_VCF" -Oz -o "$PRIM_VCF"
+    tabix -f -p vcf "$PRIM_VCF"
+    count_vcf_records "$PRIM_VCF" "Normalized primary-contig VCF"
+
+    echo "==> Running QC on final pre-imputation VCF (build38)…"
+    run_qc_analysis "$PRIM_VCF" "pre_imputation" "$QC_DIR"
+
+  else
+    echo "✗ Unexpected INPUT_BUILD=$INPUT_BUILD"
+    exit 1
+  fi
 
 
-### ─────────────────────────── 4. Eagle phasing ────────────────────────────###
-for CHR in {21..22}; do
-  REF_BCF="${REF_DIR_EAGLE}/1000GP_chr${CHR}.bcf"
-  [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
+  ### ─────────────────────────── 4. Eagle phasing ────────────────────────────###
+  for CHR in {21..22}; do
+    REF_BCF="${REF_DIR_EAGLE}/1000GP_chr${CHR}.bcf"
+    [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
 
-  # 1) Prefix Eagle map with chr
-  RAW_MAP="${MAP_DIR_EAGLE}/eagle_chr${CHR}_b38.map.gz"
-  TMP_MAP="${OUT_DIR}/tmp_eagle_chr${CHR}.map.gz"
+    # 1) Prefix Eagle map with chr
+    RAW_MAP="${MAP_DIR_EAGLE}/eagle_chr${CHR}_b38.map.gz"
+    TMP_MAP="${OUT_DIR}/tmp_eagle_chr${CHR}.map.gz"
 
-  (
-    # 1. normalise & dedupe 
-    zcat "$RAW_MAP" |
-      awk -v CHR="$CHR" '
-        # skip any header-ish lines (first field not all digits)
-        $1 !~ /^[0-9]+$/ { next }
+    # debug_vcf "$CHR_VCF"
+    # debug_vcf "$REF_BCF"
+    # zcat "$TMP_MAP" | head -5 | cat -vte
+    # bcftools isec -n=2 -w1 -p "${OUT_DIR}/isec_chr${CHR}" "$CHR_VCF" "$REF_BCF"
+    (
+      # ---- header -------------------------------------------------------------
+      echo "chr position COMBINED_rate(cM/Mb) Genetic_Map(cM)"
 
-        # parse 3- or 4-column maps
-        NF==3 { pos=$1; rate=$2; map=$3 }
-        NF>=4 { pos=$2; rate=$3; map=$4 }
+      # ---- 1. normalise & dedupe ---------------------------------------------
+      zcat "$RAW_MAP" |
+        awk -v CHR="$CHR" '
+          # skip any header-ish lines (first field not all digits)
+          $1 !~ /^[0-9]+$/ { next }
 
-        # keep the first occurrence of each physical position
-        !seen[pos]++ { print CHR, pos, rate, map }
-      ' OFS=" " |
+          # parse 3- or 4-column maps
+          NF==3 { pos=$1; rate=$2; map=$3 }
+          NF>=4 { pos=$2; rate=$3; map=$4 }
 
-    # 2. sort by physical position 
-      LC_ALL=C sort -t' ' -k2,2n |
+          # keep the first occurrence of each physical position
+          !seen[pos]++ { print CHR, pos, rate, map }
+        ' OFS=" " |
 
-    # 3. drop rows whose cM falls below previous 
-      awk '
-        NR==1 { prev_cM=$4; print; next }
-        $4 >= prev_cM { print; prev_cM=$4 }
-      '
-  ) | bgzip -c > "$TMP_MAP"
+      # ---- 2. sort by physical position --------------------------------------
+        LC_ALL=C sort -t' ' -k2,2n |
 
-  # 2) Run Eagle
-  echo "Phasing for chromosome ${CHR}"
-  "$EAGLE" \
-    --vcfRef         "$REF_BCF" \
-    --vcfTarget      "$CHR_VCF" \
-    --geneticMapFile "$TMP_MAP" \
-    --chrom          "$CHR" \
-    --outPrefix      "${PHASED_DIR}/${STEM}_phased_chr${CHR}" \
-    --numThreads     "$THREADS" \
-    --allowRefAltSwap
+      # ---- 3. drop rows whose cM falls below previous -------------------------
+        awk '
+          NR==1 { prev_cM=$4; print; next }
+          $4 >= prev_cM { print; prev_cM=$4 }
+        '
+    ) | bgzip -c > "$TMP_MAP"
 
-  rm "$TMP_MAP"
-done
 
-# 3) Post-phasing QC (sample chr21 & chr22)
-echo "Post-phasing quality control"
-for CHR in 21 22; do
-  run_qc_analysis \
-    "${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz" \
-    "post_phasing_chr${CHR}" \
-    "$QC_DIR"
-done
+
+
+
+    echo "[DEBUG] validating map order:"
+    zcat "$TMP_MAP" |
+      awk 'NR>1 {
+            if ($2 < prev_pos || $4 < prev_cM)
+                print "OUT-OF-ORDER:", $0
+            prev_pos = $2
+            prev_cM  = $4
+          }'
+
+
+
+    # 2) Run Eagle
+    echo "==> Eagle phasing chr${CHR}"
+    echo "==> DEBUG: CHR_VCF filepath ${CHR_VCF}"
+    echo "=== DEBUG: contig label parity on chr${CHR} ==="
+    echo "-- target (${CHR_VCF})"
+    bcftools index -s "$CHR_VCF" | head -n 5
+    echo "-- reference (${REF_BCF})"
+    bcftools index -s "$REF_BCF" | head -n 5
+    echo "-- variant intersection count"
+    bcftools isec -n=2 -w1 -p "${OUT_DIR}/isec_chr${CHR}" "$CHR_VCF" "$REF_BCF"
+    echo "  $(grep -vc '^#' "${OUT_DIR}"/isec_chr"${CHR}"/0003.vcf) shared sites"
+
+    "$EAGLE" \
+      --vcfRef         "$REF_BCF" \
+      --vcfTarget      "$CHR_VCF" \
+      --geneticMapFile "$TMP_MAP" \
+      --chrom          "$CHR" \
+      --outPrefix      "${PHASED_DIR}/${STEM}_phased_chr${CHR}" \
+      --numThreads     "$THREADS" \
+      --allowRefAltSwap
+
+    rm "$TMP_MAP"
+  done
+
+    # 3) Post-phasing QC (sample chr21 & chr22)
+   echo "==> QC: post_phasing"
+   for CHR in 21 22; do
+      run_qc_analysis \
+        "${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz" \
+        "post_phasing_chr${CHR}" \
+        "$QC_DIR"
+  done
 
 ### ─────────────────────────── 5. Beagle imputation ────────────────────────###
 for CHR in {21..22}; do 
@@ -418,14 +506,15 @@ for CHR in {21..22}; do
   trap 'rm -f "$TEMP_MAP"' EXIT HUP INT QUIT TERM
 
   if [[ ! -f "$GT" ]] || [[ ! -f "$REF" ]] || [[ ! -f "$MAP" ]]; then
-    # skip chr${CHR} (missing one or more input files: VCF, REF, or MAP)
+    echo "==> skip chr${CHR} (missing one or more input files: VCF, REF, or MAP)"
     rm -f "$TEMP_MAP" 
     continue 
   fi
 
+  echo "==> Preparing chr${CHR} for Beagle: adding 'chr' prefix to map file"
   awk 'BEGIN{OFS="\t"} {$1="chr"$1; print}' "$MAP" > "$TEMP_MAP"
 
-  echo -e "Imputation for chromosome ${CHR}"
+  echo -e "\n==> Beagle imputation chr${CHR}"
   java -Xmx8g -jar "$JAR" \
     gt="$GT" \
     ref="$REF" \
@@ -441,7 +530,7 @@ done
 
 trap 'rm -f "$LIST"' EXIT
 
-echo "Indexing and concatenating imputed chromosomes"
+echo "==> indexing and concatenating imputed chromosomes"
 LIST=$(mktemp)
 missing_flag=0
 
@@ -466,6 +555,24 @@ bcftools concat -f "$LIST" -Oz -o "$FINAL_VCF"
 tabix -f -p vcf "$FINAL_VCF"
 rm -f "$LIST"
 
+
+# FINAL POST-IMPUTATION QC CHECK: Complete imputed VCF
+echo "==> Running comprehensive QC on final imputed VCF..."
+run_qc_analysis "$FINAL_VCF" "post_imputation" "$QC_DIR"
+
+echo -e "\n✓ Imputation complete."
+echo "  Final VCF: $FINAL_VCF"
+echo "  QC Reports: $QC_DIR/"
+echo ""
+echo "  Final VCF: $FINAL_VCF"
+echo "  QC Reports: $QC_DIR/"
+
+echo "==> VERIFY: INFO lines in final VCF header"
+bcftools view -h "$FINAL_VCF" | grep '^##INFO='
+
+echo "==> VERIFY: first few DR2 values"
+bcftools query -f '%INFO/DR2\n' "$FINAL_VCF" | head -n 10
+
 bcftools +fill-tags "$FINAL_VCF" -- -t AF | \
   bcftools query -f '%INFO/AF\t%INFO/DR2\n' | \
   awk '
@@ -478,4 +585,15 @@ bcftools +fill-tags "$FINAL_VCF" -- -t AF | \
     }'
 
 
-echo "Imputation complete"
+echo "==> QC SUMMARY:"
+echo "  Check these files for detailed analysis:"
+echo "    - Initial conversion QC: $QC_DIR/initial_conversion_qc_report.txt"
+echo "    - Pre-imputation QC: $QC_DIR/pre_imputation_qc_report.txt"
+echo "    - Post-phasing QC: $QC_DIR/post_phasing_chr1_qc_report.txt"
+echo "    - Final imputation QC: $QC_DIR/post_imputation_qc_report.txt"
+echo ""
+echo "  Key things to check in the reports:"
+echo "    1. Missing rates should be <5% at each step"
+echo "    2. Data should be properly phased before imputation"
+echo "    3. Mean DR2 should be >0.3 (ideally >0.5) in final output"
+echo "    4. >30% of variants should have DR2 >0.8 for good quality"
