@@ -9,7 +9,7 @@
 #   ${STEM}_results/
 #     ├─ phased_dir/            # Eagle output per chr
 #     ├─ imputed_dir/           # Beagle output per chr (with DS & GP)
-#     ├─ qc_reports/            # QC analysis reports
+#     ├─ imputation_qc_reports/            # QC analysis reports
 #     └─ ${STEM}_imputed_all.vcf.gz (+ .tbi)
 #
 # NOTES:
@@ -235,7 +235,7 @@ fi
 OUT_DIR="${ROOT_DIR}/users/${STEM}"
 PHASED_DIR="${OUT_DIR}/phased_dir"
 IMPUTED_DIR="${OUT_DIR}/imputed_dir"
-QC_DIR="${OUT_DIR}/qc_reports"
+QC_DIR="${OUT_DIR}/imputation_qc_reports"
 mkdir -p "$OUT_DIR" "$PHASED_DIR" "$IMPUTED_DIR" "$QC_DIR"
 
 RAW_GZ="${OUT_DIR}/${STEM}.txt.gz"
@@ -472,8 +472,8 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
     echo "-- reference (${REF_BCF})"
     bcftools index -s "$REF_BCF" | head -n 5
     echo "-- variant intersection count"
-    bcftools isec -n=2 -w1 -p "${OUT_DIR}/isec_chr${CHR}" "$CHR_VCF" "$REF_BCF"
-    echo "  $(grep -vc '^#' "${OUT_DIR}"/isec_chr"${CHR}"/0003.vcf) shared sites"
+    # bcftools isec -n=2 -w1 -p "${OUT_DIR}/isec_chr${CHR}" "$CHR_VCF" "$REF_BCF"
+    # echo "  $(grep -vc '^#' "${OUT_DIR}"/isec_chr"${CHR}"/0003.vcf) shared sites"
 
     "$EAGLE" \
       --vcfRef         "$REF_BCF" \

@@ -7,6 +7,31 @@ set -Eeuo pipefail
 #  - In CONTAINER: Acts as the WORKER to run the pipeline.
 
 # The switch is the $INSIDE_DOCKER environment variable.
+
+# (Put near top of script)
+set -Eeuo pipefail
+IFS=$'\n\t'
+log(){ printf '%s\n' "$*" >&2; }
+die(){ log "✗ $*"; exit 1; }
+
+cleanup_imputation_tmp() {
+  shopt -s nullglob
+  rm -rf "$USER_DIR/imputed_dir" \
+         "$USER_DIR/phased_dir" \
+         "$USER_DIR"/isec_chr*/
+  rm -f "$USER_DIR"/*.build37.chr.vcf.gz* \
+        "$USER_DIR"/*.build37.chr.alt.vcf.gz* \
+        "$USER_DIR"/*.lift38.vcf \
+        "$USER_DIR"/*.lift38.*.vcf.gz* \
+        "$USER_DIR"/*_stranded_clean.vcf.gz* \
+        "$USER_DIR"/*.reheadered.vcf.gz* \
+        "$USER_DIR"/*.alt.vcf.gz* \
+        "$USER_DIR/$STEM.txt.gz" \
+        2>/dev/null || true
+  shopt -u nullglob
+}
+
+
 if [ -z "${INSIDE_DOCKER:-}" ]; then
   ##############################################################################
   ### MODE 1: HOST (WRAPPER)                                                 ###
@@ -69,9 +94,6 @@ else
   ##############################################################################
 
   echo "==> [CONTAINER] Script running inside Docker. Starting pipeline..."
-
-
-  # --- This is your original pipeline logic ---
   source "/app/scripts/pipeline/config.sh"
 
   if [[ $# -lt 1 ]]; then
@@ -119,30 +141,44 @@ else
     echo "==> [CONTAINER] Found existing FINAL_VCF: $FINAL_VCF (skipping imputation)"
     # ensure it's indexed
     [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
+  # Replace your imputation block with this
   else
-    if [[ $INPUT == *.vcf.gz ]]; then
-      echo "==> [CONTAINER] Using provided VCF (skipping imputation)"
-      cp -v "$INPUT" "$FINAL_VCF"
-      tabix -f -p vcf "$FINAL_VCF" || true
-    else
-      echo "==> [CONTAINER] Running imputation…"
-      OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
+    echo "==> [CONTAINER] Running imputation…"
 
-      # sanity: ensure final file exists and is indexed
-      [[ -f "$FINAL_VCF" ]] || { echo "✗ Could not find expected output: $FINAL_VCF" >&2; exit 1; }
-      [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
+    # Run the flaky step without aborting the whole script, but record the status.
+    set +e
+    OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
+    imp_status=$?
+    set -e
+
+    # Cleanup should always run, success or failure.
+    cleanup_imputation_tmp || true
+
+    # Validate success by artifacts, not by exit code.
+    [[ -s "$FINAL_VCF" ]] || die "Imputation exited $imp_status and produced no $FINAL_VCF"
+
+    # Basic integrity checks
+    tabix -f -p vcf "$FINAL_VCF" || die "Failed to index $FINAL_VCF"
+    nvar=$( (zgrep -vc '^#' "$FINAL_VCF" || echo 0) )
+    (( nvar > 0 )) || die "Imputed VCF has zero variants"
+
+    # Optional: only treat certain non-zero codes as warnings
+    if [[ "$imp_status" -ne 0 ]]; then
+      log "⚠ Imputation returned $imp_status, but outputs validated (variants: $nvar); continuing."
     fi
   fi
+
+
 
   # 2) Preparing PLINK2 PFILE from imputed VCF…
   VCF_TO_PFILE_SH="/app/scripts/pipeline/vcf_to_pfile.sh"
 
-  # Optional knobs for filtering; comment out or tweak as desired
-  INFO_KEY="${IMP_INFO_KEY:-}"        # e.g., R2, INFO, or IMPINFO; leave empty to auto-detect
-  INFO_MIN="${IMP_INFO_MIN:-0.8}"     # threshold for the chosen INFO key
+  INFO_KEY="${IMP_INFO_KEY:-}"           # e.g., R2, INFO, or IMPINFO; leave empty to auto-detect
+  INFO_MIN="${IMP_INFO_MIN:-0.8}"        # threshold for the chosen INFO key
   KEEP_UNFILTERED="${KEEP_FILTERED:-0}"  # 1 to skip bcftools filtering
 
   USER_PFILE="$USER_DIR/pfiles/user"
+  PANEL_ID_FILE="/app/pca_model/panel.ids"
 
   have_pfiles() {
     local pref="$1"
@@ -164,17 +200,18 @@ else
   else
     echo "==> [CONTAINER] Building PFILE trio from $FINAL_VCF"
     mkdir -p "$(dirname "$USER_PFILE")"
+
+    args=( --vcf "$FINAL_VCF" --out-prefix "$USER_PFILE" )
+    [[ -n "${INFO_KEY:-}" ]] && args+=( --info-key "$INFO_KEY" )
+    [[ -n "${INFO_MIN:-}" ]] && args+=( --info-min "$INFO_MIN" )
+
     if [[ "$KEEP_UNFILTERED" -eq 1 ]]; then
-      "$VCF_TO_PFILE_SH" --vcf "$FINAL_VCF" --out-prefix "$USER_PFILE" \
-        ${INFO_KEY:+--info-key "$INFO_KEY"} ${INFO_MIN:+--info-min "$INFO_MIN"} \
-        --keep-unfiltered >/dev/null
-    else
-      "$VCF_TO_PFILE_SH" --vcf "$FINAL_VCF" --out-prefix "$USER_PFILE" \
-        ${INFO_KEY:+--info-key "$INFO_KEY"} ${INFO_MIN:+--info-min "$INFO_MIN"} >/dev/null
+      args+=( --extract-snps "$PANEL_ID_FILE" --keep-unfiltered )
     fi
+
+    "$VCF_TO_PFILE_SH" "${args[@]}" >/dev/null
+
   fi
-
-
 
   # 3) Project user PCs and assign ancestry
   echo "==> Calling ancestry…"

@@ -86,6 +86,7 @@ fi
 # 3. Run ancestry PCA
 echo "==> [CONTAINER] Running PCA setup..."
 PCA_FILES=(
+  "/app/pca_model/pca_sites.b38.tsv"
   "/app/pca_model/ref_means.npy"
   "/app/pca_model/ref_stds.npy"
   "/app/pca_model/loadings.npy"
@@ -106,15 +107,25 @@ if [ "$all_exist" = true ]; then
   echo "✓ [CONTAINER] All PCA files already exist. Skipping generation."
 else
   echo "==> [CONTAINER] Running PCA script..."
-exec python3 -u /app/scripts/analyses/fit_pca_1kg.py \
-  --vcf-pattern "${VCF_PATTERN}" \
-  --labels      "${LABELS_PATH}" \
-  --out         "${OUT_DIR}" \
-  --pcs         "${PCS}" \
-  --sites       "${SITES_PATH}" \
-  --random-seed "${RANDOM_SEED}" \
-  "$@"
-fi
+  python3 -u /app/scripts/analyses/fit_pca_1kg.py \
+    --vcf-pattern "${VCF_PATTERN}" \
+    --labels      "${LABELS_PATH}" \
+    --out         "${OUT_DIR}" \
+    --pcs         "${PCS}" \
+    --sites       "${SITES_PATH}" \
+    --random-seed "${RANDOM_SEED}" \
+    "$@"
 
+  echo "==> [CONTAINER] Cleaning up non-essential PCA files..."
+  find /app/pca_model -mindepth 1 -maxdepth 1 \
+    ! -name "pca_sites.b38.tsv" \
+    ! -name "ref_means.npy" \
+    ! -name "ref_stds.npy" \
+    ! -name "loadings.npy" \
+    ! -name "ref_scores.csv" \
+    ! -name "classifier.pkl" \
+    ! -name "meta.json" \
+    -exec rm -rf -- {} +
+fi
 
 

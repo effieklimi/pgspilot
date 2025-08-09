@@ -81,6 +81,10 @@ def main():
         pcs_vals = np.zeros(K, dtype=float)
         iid = None
 
+        # Precompute an index for ids -> row
+        id_to_idx = {vid: i for i, vid in enumerate(ids)}
+        used_count = None  # filled after first PC
+
         for k in range(K):
             score_path = os.path.join(work, f"pc{k+1}.score.tsv")
             with open(score_path, "w") as f:
@@ -89,15 +93,28 @@ def main():
                     f.write(f"{ids[i]}\t{a1s[i]}\t{betas[i, k]:.10g}\n")
 
             out_pref = os.path.join(work, f"pc{k+1}")
-            run(["plink2", "--pfile", std_prefix,
-                "--score", score_path, "1", "2", "3", "header-read", "no-mean-imputation",
-                "cols=+scoresums",   # <- guarantees SCORE1_SUM
-                "--out", out_pref])
-
+            run([
+                "plink2", "--pfile", std_prefix,
+                "--score", score_path, "1","2","3","header-read",
+                "no-mean-imputation",          # <-- add this
+                "cols=+scoresums",
+                "list-variants",
+                "--out", out_pref
+            ])
             ssc = pd.read_csv(out_pref + ".sscore", sep=r"\s+")
             if iid is None:
                 iid = ssc["IID"].iloc[0]
-            pcs_vals[k] = float(ssc[detect_score_col(ssc)].iloc[0]) + float(intercept[k])
+
+            if used_count is None:
+                used_ids = pd.read_csv(out_pref + ".sscore.vars", header=None)[0].tolist()
+                idx = [id_to_idx[v] for v in used_ids if v in id_to_idx]
+                used_count = len(idx)
+                used_frac = used_count / float(M)
+
+            # Subset-aware intercept on the same idx
+            score_sum = float(ssc[detect_score_col(ssc)].iloc[0])
+            pcs_vals[k] = score_sum - float((betas[idx, k] * means[idx]).sum())
+
 
         # Save user PCs
         with open(args.out_pcs, "w") as g:
@@ -126,7 +143,9 @@ def main():
         pd.DataFrame([{
             "sample_id": iid,
             "assigned_subpop": label,
-            "distance_over_thr": float(ratio)
+            "distance_over_thr": float(ratio),
+            "used_markers": int(used_count),
+            "used_fraction": float(used_frac)
         }]).to_csv(args.out_ancestry, sep="\t", index=False)
 
         print(f"[OK] Wrote {args.out_pcs} and {args.out_ancestry} (assigned={label})")
