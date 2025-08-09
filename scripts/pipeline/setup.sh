@@ -39,7 +39,7 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
     pgspilot \
-    /app/scripts/pipeline/setup.sh "${EXTRA_ARGS[@]}"
+    /app/scripts/pipeline/setup.sh
 
   echo "✓ [HOST] PCA setup finished."
   exit 0
@@ -48,13 +48,64 @@ fi
 ###############################################################################
 ### MODE 2: CONTAINER (worker) ###############################################
 ###############################################################################
-echo "==> [CONTAINER] Executing PCA setup…"
-bash "/app/scripts/pipeline/pruned_panel.sh"
 
-echo "==> [CONTAINER] Running per-ancestry MAF script..."
-bash "/app/scripts/pipeline/per_ancestry_maf.sh"
+# 1. Generate LD-pruned panel 
+if [ -f "$PRUNED_PATH" ]; then
+  echo "✓ [CONTAINER] Pruned panel already exists at $PRUNED_PATH. Skipping."
+else
+  echo "==> [CONTAINER] Running pruned panel script..."
+  bash "/app/scripts/pipeline/pruned_panel.sh"
+fi
 
+# 2. Make per-ancestry maf files
+MAF_FILES=(
+  "/app/pca_model/maf_AFR.grch38.tsv.gz"
+  "/app/pca_model/maf_AMR.grch38.tsv.gz"
+  "/app/pca_model/maf_EAS.grch38.tsv.gz"
+  "/app/pca_model/maf_EUR.grch38.tsv.gz"
+  "/app/pca_model/maf_SAS.grch38.tsv.gz"
+)
+
+# Check if all files already exist
+all_exist=true
+for f in "${MAF_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    all_exist=false
+    break
+  fi
+done
+
+if [ "$all_exist" = true ]; then
+  echo "✓ [CONTAINER] All per-ancestry MAF files already exist. Skipping generation."
+else
+  echo "==> [CONTAINER] Running per-ancestry MAF script..."
+  bash "/app/scripts/pipeline/per_ancestry_maf.sh"
+fi
+
+
+# 3. Run ancestry PCA
 echo "==> [CONTAINER] Running PCA setup..."
+PCA_FILES=(
+  "/app/pca_model/ref_means.npy"
+  "/app/pca_model/ref_stds.npy"
+  "/app/pca_model/loadings.npy"
+  "/app/pca_model/ref_scores.csv"
+  "/app/pca_model/classifier.pkl"
+  "/app/pca_model/meta.json"
+)
+
+all_exist=true
+for f in "${PCA_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    all_exist=false
+    break
+  fi
+done
+
+if [ "$all_exist" = true ]; then
+  echo "✓ [CONTAINER] All PCA files already exist. Skipping generation."
+else
+  echo "==> [CONTAINER] Running PCA script..."
 exec python3 -u /app/scripts/analyses/fit_pca_1kg.py \
   --vcf-pattern "${VCF_PATTERN}" \
   --labels      "${LABELS_PATH}" \
@@ -63,3 +114,7 @@ exec python3 -u /app/scripts/analyses/fit_pca_1kg.py \
   --sites       "${SITES_PATH}" \
   --random-seed "${RANDOM_SEED}" \
   "$@"
+fi
+
+
+
