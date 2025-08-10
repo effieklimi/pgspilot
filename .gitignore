@@ -2,8 +2,7 @@ genome_data/
 genome_data_old/
 users/
 pca_model/
+pgs/
 input_data/
 plink2
 vcf_subset
-weights_hm/
-weights_raw/

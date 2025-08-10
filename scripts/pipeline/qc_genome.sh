@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Host vs container switch (mirror user.sh/add_pgs.sh behavior)
+if [ -z "${INSIDE_DOCKER:-}" ]; then
+  ##############################################################################
+  ### MODE 1: HOST (WRAPPER)                                                 ###
+  ##############################################################################
+
+  # Locate project root (repo root = two levels up from this script)
+  THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+  PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
+
+  DOCKER_IMAGE="${DOCKER_IMAGE:-pgspilot}"
+
+  # Re-invoke this script inside the container, forwarding all args
+  docker run --rm \
+    -e INSIDE_DOCKER=1 \
+    -v "${PROJECT_ROOT}:/app" \
+    "$DOCKER_IMAGE" \
+    /app/scripts/pipeline/qc_genome.sh "$@"
+
+  exit 0
+fi
+
 # 23andMe raw file QC + metadata extractor (robust, streaming)
 # Usage: qc_23andme.sh path/to/23andme_raw.txt[.gz]
 # Output: PROJECT_ROOT/users/STEM/STEM_initial_qc.txt ; exit code 0 on PASS/WARN, 1 on FAIL

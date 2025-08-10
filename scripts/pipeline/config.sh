@@ -25,10 +25,9 @@ ONEKG_LABELS="${ROOT_DIR}/genome_data/1000g/integrated_call_samples_v3.20130502.
 PCA_DIR="${ROOT_DIR}/pca_model"
 
 # Project directories
-WEIGHTS_RAW_DIR="${ROOT_DIR}/weights_raw"   # source PGS files (from PGS Catalog)
-WEIGHTS_HM_DIR="${ROOT_DIR}/weights_hm"     # harmonized weights (output)
-TRAITS_DIR="${ROOT_DIR}/traits"             # frozen include lists (output)
-CALIB_DIR="${ROOT_DIR}/calibration"         # trait calibrations (output)
+WEIGHTS_RAW_DIR="${ROOT_DIR}/pgs/weights/raw"   # source PGS files (from PGS Catalog)
+WEIGHTS_HM_DIR="${ROOT_DIR}/pgs/weights/harmonized"     # harmonized weights (output)
+TRAITS_DIR="${ROOT_DIR}/pgs/traits"             # frozen include lists (output)
 USERS_DIR="${ROOT_DIR}/users"               # per-user outputs
 
 # Scorable & optional mask
@@ -46,7 +45,7 @@ MIN_VARIANTS=20
 PYTHON="python3"
 
 # Scripts (paths relative to repo root)
-WEIGHTS_HARMONIZER="${ROOT_DIR}/scripts/analyses/weights_harmonize_b38.py"
+WEIGHTS_HARMONIZER="${ROOT_DIR}/scripts/analyses/pgs_fetch_hmpos_and_filter.py"
 INCLUDE_BUILDER="${ROOT_DIR}/scripts/analyses/build_include_lists.py"
 CALIB_BUILDER="${ROOT_DIR}/scripts/analyses/build_calibration.py"
 PCA_FITTER="${ROOT_DIR}/scripts/analyses/fit_pca_1kg.py"

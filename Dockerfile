@@ -76,23 +76,40 @@ RUN wget -q https://s3.amazonaws.com/plink2-assets/alpha6/${PLINK2_ZIP} \
     && rm -f ${PLINK2_ZIP} plink2.license plink2.md \
     && /usr/local/bin/plink2 --version || /usr/local/bin/plink2 -v || echo "plink2 installed (version check non-fatal)"
 
+# --- Python packages (single layer, pinned where sensible) ---
 RUN pip3 install --no-cache-dir \
-    numpy \
-    pandas \
+    numpy==1.26.4 \
+    pandas==2.2.2 \
+    requests==2.32.3 \
+    pyfaidx==0.8.1.1 \
+    pyliftover==0.4 \
     scipy \
     scikit-learn \
     cyvcf2 \
-    joblib
+    joblib \
+ && python3 - <<'PY'
+import numpy, pandas, requests
+from pyfaidx import Fasta
+try:
+    from pyliftover import LiftOver
+except Exception as e:
+    raise SystemExit("pyliftover import failed: %s" % e)
+print("Imports OK")
+PY
+
 
 # 3. Copy your project's scripts into the container
 COPY scripts/ /app/scripts/
 
 # 4. Make all shell scripts executable in a single, efficient layer
 RUN chmod +x /app/scripts/pipeline/user.sh \
-           /app/scripts/pipeline/prep_pgs.sh \
-           /app/scripts/analyses/impute.sh \
+           /app/scripts/pipeline/add_pgs.sh \
            /app/scripts/pipeline/setup.sh \
-           /app/scripts/pipeline/pruned_panel.sh
+           /app/scripts/pipeline/pruned_panel.sh \
+           /app/scripts/pipeline/qc_genome.sh \
+           /app/scripts/pipeline/vcf_to_pfile.sh \
+           /app/scripts/pipeline/per_ancestry_maf.sh \
+           /app/scripts/analyses/impute.sh
 
 # 5. Set the default command to run when the container starts interactively
 CMD ["/bin/bash"]

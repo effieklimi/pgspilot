@@ -30,16 +30,13 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
   THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
   PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
 
-  # Forward any CLI overrides to the inner call
-  EXTRA_ARGS=("$@")
-
   echo "==> [HOST] Launching Docker container for PCA setup..."
   docker run --rm \
     -m 48g --memory-swap -1 \
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
     pgspilot \
-    /app/scripts/pipeline/setup.sh
+    /app/scripts/pipeline/setup.sh "$@"
 
   echo "✓ [HOST] PCA setup finished."
   exit 0
@@ -107,14 +104,14 @@ if [ "$all_exist" = true ]; then
   echo "✓ [CONTAINER] All PCA files already exist. Skipping generation."
 else
   echo "==> [CONTAINER] Running PCA script..."
-  python3 -u /app/scripts/analyses/fit_pca_1kg.py \
+  python3 /app/scripts/analyses/fit_pca_1kg.py fit-ref \
     --vcf-pattern "${VCF_PATTERN}" \
-    --labels      "${LABELS_PATH}" \
-    --out         "${OUT_DIR}" \
-    --pcs         "${PCS}" \
-    --sites       "${SITES_PATH}" \
-    --random-seed "${RANDOM_SEED}" \
-    "$@"
+    --labels "${LABELS_PATH}" \
+    --sites "${SITES_PATH}" \
+    --out "${OUT_DIR}" \
+    --pcs 12 \
+    --exclude-mhc --exclude-long-range
+
 
   echo "==> [CONTAINER] Cleaning up non-essential PCA files..."
   find /app/pca_model -mindepth 1 -maxdepth 1 \

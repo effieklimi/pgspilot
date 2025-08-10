@@ -1,17 +1,14 @@
 #!/bin/sh
-set -e # Exit immediately if a command exits with a non-zero status.
+set -e
 
-# This is the main entry point for the client.
-# It avoids the need for them to run `chmod` on any files.
-
-if [ $# -eq 0 ]; then
-  echo "Error: Please provide the path to your input file."
-  echo "Usage: bash run_pipeline.sh /path/to/your/file.txt"
+# Usage: bash run_pipeline.sh PGS000123 [PGS000456 ...]
+if [ $# -lt 1 ]; then
+  echo "Error: Please provide one or more PGS IDs."
+  echo "Usage: bash run_pipeline.sh PGS000123 [PGS000456 ...]"
   exit 1
 fi
 
-# We find the directory of this script, so it can be run from anywhere.
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
-# We call the *real* wrapper script using bash, passing along all arguments.
+# Pass all IDs through to the real runner
 bash "${SCRIPT_DIR}/pipeline/add_pgs.sh" "$@"
