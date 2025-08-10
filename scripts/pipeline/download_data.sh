@@ -349,7 +349,67 @@ setup_beagle_maps_b38(){
 
 setup_chain(){
   local dir="${GENOME_DIR}/chain"; ensure_dir "$dir"
-  log "==> [chain] Placeholder: liftOver chain files (e.g., hg19ToHg38.over.chain.gz) in $dir"
+  local url="https://hgdownload.soe.ucsc.edu/gbdb/hg19/liftOver/hg19ToHg38.over.chain.gz"
+  local dest="${dir}/hg19ToHg38.over.chain.gz"
+  local tmp="${dest}.part"
+
+  log "==> [chain] Ensuring liftOver chain at $dest"
+
+  # Best-effort size probe
+  local remote_size
+  remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
+    | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
+
+  # If exists and passes gzip -t (and size matches if known), skip
+  if [[ -s "$dest" ]]; then
+    if gzip -t "$dest" 2>/dev/null; then
+      if [[ -n "$remote_size" ]]; then
+        local local_size
+        local_size=$(stat -c '%s' "$dest" 2>/dev/null || stat -f '%z' "$dest")
+        if [[ "$local_size" == "$remote_size" ]]; then
+          log "[chain] Existing file valid and size matches ($local_size). Skipping."
+          return 0
+      
+        fi
+      else
+        log "[chain] Existing file valid (gzip test passed). Skipping."
+        return 0
+      fi
+    else
+      log "[chain] Existing file failed gzip test; will resume/overwrite."
+      mv -f "$dest" "$tmp"
+    fi
+  fi
+
+  # Resume or fresh download
+  if ! wget -c \
+        --tries=10 \
+        --waitretry=5 \
+        --read-timeout=60 \
+        --timeout=60 \
+        --retry-connrefused \
+        --no-verbose \
+        -O "$tmp" "$url"; then
+    log "[chain] Download failed. Retrying once after 10s…"
+    sleep 10
+    wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
+  fi
+
+  # Verify size if known and gzip integrity
+  if [[ -n "$remote_size" ]]; then
+    local final_size
+    final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
+    if [[ "$final_size" != "$remote_size" ]]; then
+      die "[chain] Size mismatch after download ($final_size != $remote_size)"
+    fi
+  fi
+
+  if ! gzip -t "$tmp" 2>/dev/null; then
+    die "[chain] Gzip integrity check failed after download."
+  fi
+
+  mv -f "$tmp" "$dest"
+  log "[chain] Ready: $(basename "$dest")"
 }
 
 setup_eagle_maps_b38(){
@@ -359,13 +419,165 @@ setup_eagle_maps_b38(){
 
 setup_fasta(){
   local dir="${GENOME_DIR}/fasta"; ensure_dir "$dir"
-  log "==> [fasta] Placeholder: reference FASTA(s) and .fai index in $dir"
-  log "    Expected: Homo_sapiens_assembly19.fasta(.fai), Homo_sapiens_assembly38.fasta(.fai)"
+  log "==> [fasta] Ensuring GRCh38 and GRCh19 FASTA + .fai in $dir"
+
+  # Helper: download .gz with resume, verify gzip, decompress atomically to .fasta
+  download_and_unpack(){
+    local url="$1"      # source .gz URL
+    local dest_fasta="$2"  # final .fasta path
+
+    local dest_gz="${dest_fasta}.gz"
+    local tmp_gz="${dest_gz}.part"
+    local tmp_fa="${dest_fasta}.part"
+
+    # If FASTA exists and looks valid, just ensure index
+    if [[ -s "$dest_fasta" ]]; then
+      if head -n1 "$dest_fasta" | grep -q '^>' ; then
+        :
+      else
+        log "[fasta] Existing $(basename "$dest_fasta") failed header check; will re-download."
+        rm -f "$dest_fasta"
+      fi
+    fi
+
+    if [[ ! -s "$dest_fasta" ]]; then
+      # Download with resume and retries (follow redirects)
+      if ! wget -c -L \
+            --tries=10 \
+            --waitretry=5 \
+            --read-timeout=60 \
+            --timeout=60 \
+            --retry-connrefused \
+            --no-verbose \
+            -O "$tmp_gz" "$url"; then
+        log "[fasta] Download failed for $(basename "$dest_fasta"). Retrying once after 10s…"
+        sleep 10
+        wget -c -L --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp_gz" "$url"
+      fi
+
+      # Validate and decompress
+      if ! gzip -t "$tmp_gz" 2>/dev/null; then
+        die "[fasta] Gzip integrity failed for $(basename "$dest_fasta")."
+      fi
+      gzip -cd "$tmp_gz" > "$tmp_fa"
+
+      if [[ ! -s "$tmp_fa" ]] || ! head -n1 "$tmp_fa" | grep -q '^>' ; then
+        die "[fasta] Decompressed FASTA invalid for $(basename "$dest_fasta")."
+      fi
+
+      mv -f "$tmp_fa" "$dest_fasta"
+      rm -f "$tmp_gz" "$dest_gz" 2>/dev/null || true
+      log "[fasta] Ready: $(basename "$dest_fasta")"
+    fi
+
+    # Build index if missing or stale
+    if [[ ! -s "${dest_fasta}.fai" || "${dest_fasta}.fai" -ot "$dest_fasta" ]]; then
+      log "[fasta] Indexing $(basename "$dest_fasta")"
+      samtools faidx "$dest_fasta"
+    fi
+  }
+
+  # Run both downloads (GRCh38 and GRCh19) possibly in parallel
+  local -a pids=()
+
+  download_and_unpack \
+    "https://github.com/broadinstitute/gatk/raw/refs/heads/master/src/test/resources/large/Homo_sapiens_assembly38.fasta.gz?download=" \
+    "${dir}/Homo_sapiens_assembly38.fasta" &
+  pids+=("$!")
+
+  download_and_unpack \
+    "https://github.com/broadinstitute/gatk/raw/refs/heads/master/src/test/resources/large/Homo_sapiens_assembly19.fasta.gz?download=" \
+    "${dir}/Homo_sapiens_assembly19.fasta" &
+  pids+=("$!")
+
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+
+  log "[fasta] GRCh38 and GRCh19 FASTA + .fai ready."
 }
 
 setup_jars(){
   local dir="${GENOME_DIR}/jars"; ensure_dir "$dir"
-  log "==> [jars] Placeholder: required Java JARs (e.g., picard/htsjdk/others) in $dir"
+  log "==> [jars] Ensuring Beagle and bref3 JARs in $dir"
+
+  # Define artifacts
+  local url_beagle="https://faculty.washington.edu/browning/beagle/beagle.27Feb25.75f.jar"
+  local url_bref3="https://faculty.washington.edu/browning/beagle/bref3.27Feb25.75f.jar"
+  local dest_beagle="${dir}/beagle.27Feb25.75f.jar"
+  local dest_bref3="${dir}/bref3.27Feb25.75f.jar"
+
+  # Helper to download with resume and verify ZIP/JAR integrity
+  fetch_jar(){
+    local url="$1"; local dest="$2"
+    local tmp="${dest}.part"
+
+    # Probe remote size
+    local remote_size
+    remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
+      | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
+
+    # Skip if existing passes a zip integrity check and matches size (if known)
+    if [[ -s "$dest" ]]; then
+      if unzip -tq "$dest" >/dev/null 2>&1; then
+        if [[ -n "$remote_size" ]]; then
+          local local_size
+          local_size=$(stat -c '%s' "$dest" 2>/dev/null || stat -f '%z' "$dest")
+          if [[ "$local_size" == "$remote_size" ]]; then
+            log "[jars] $(basename "$dest") present and valid; skipping."
+            return 0
+          fi
+        else
+          log "[jars] $(basename "$dest") valid (zip test); skipping."
+          return 0
+        fi
+      else
+        log "[jars] $(basename "$dest") failed integrity test; will resume/overwrite."
+        mv -f "$dest" "$tmp"
+      fi
+    fi
+
+    # Download with resume and retries (follow redirects just in case)
+    if ! wget -c -L \
+          --tries=10 \
+          --waitretry=5 \
+          --read-timeout=60 \
+          --timeout=60 \
+          --retry-connrefused \
+          --no-verbose \
+          -O "$tmp" "$url"; then
+      log "[jars] Download failed for $(basename "$dest"). Retrying once after 10s…"
+      sleep 10
+      wget -c -L --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
+    fi
+
+    # Verify size if known
+    if [[ -n "$remote_size" ]]; then
+      local final_size
+      final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
+      if [[ "$final_size" != "$remote_size" ]]; then
+        die "[jars] Size mismatch after download for $(basename "$dest") ($final_size != $remote_size)"
+      fi
+    fi
+
+    # Integrity check as ZIP
+    if ! unzip -tq "$tmp" >/dev/null 2>&1; then
+      die "[jars] Integrity check failed for $(basename "$dest")."
+    fi
+
+    mv -f "$tmp" "$dest"
+    log "[jars] Ready: $(basename "$dest")"
+  }
+
+  # Download in parallel
+  local -a pids=()
+  fetch_jar "$url_beagle" "$dest_beagle" & pids+=("$!")
+  fetch_jar "$url_bref3" "$dest_bref3" & pids+=("$!")
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
 }
 
 setup_ref_bcfs_b38(){
