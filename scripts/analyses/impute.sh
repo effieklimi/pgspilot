@@ -500,7 +500,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1000GP_chr${CHR}.bref3"
-  MAP="${MAP_DIR_BEAGLE}/beagle_chr${CHR}_b38.map"
+  MAP="${MAP_DIR_BEAGLE}/plink.chr${CHR}GRCh38.map"
   TEMP_MAP=$(mktemp) 
 
   trap 'rm -f "$TEMP_MAP"' EXIT HUP INT QUIT TERM
