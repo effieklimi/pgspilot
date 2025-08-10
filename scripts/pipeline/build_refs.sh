@@ -144,17 +144,20 @@ setup_ref_brefs_b38(){
     fi
 
     local tmpdir; tmpdir=$(mktemp -d)
-    local cleanup_tmp(){ rm -rf "$tmpdir" 2>/dev/null || true; }; trap cleanup_tmp RETURN
     local tmp_prefix="${tmpdir}/chr${chr}"; local tmp_bref3="${tmp_prefix}.bref3"
 
     log "[ref_brefs_b38 chr${chr}] Running bref3 converter"
     if ! java -Xmx"$java_mem" -jar "$bref3_jar" vcf="$in_vcf" out="$tmp_prefix" >/dev/null 2>&1; then
       log "[ref_brefs_b38 chr${chr}] First attempt failed; retrying once…"; sleep 3
-      java -Xmx"$java_mem" -jar "$bref3_jar" vcf="$in_vcf" out="$tmp_prefix" >/dev/null 2>&1 || die "[ref_brefs_b38 chr${chr}] bref3 conversion failed"
+      java -Xmx"$java_mem" -jar "$bref3_jar" vcf="$in_vcf" out="$tmp_prefix" >/dev/null 2>&1 || { rm -rf "$tmpdir" 2>/dev/null || true; die "[ref_brefs_b38 chr${chr}] bref3 conversion failed"; }
     fi
 
-    [[ -s "$tmp_bref3" ]] || die "[ref_brefs_b38 chr${chr}] Missing output bref3 from converter"
+    if [[ ! -s "$tmp_bref3" ]]; then
+      rm -rf "$tmpdir" 2>/dev/null || true
+      die "[ref_brefs_b38 chr${chr}] Missing output bref3 from converter"
+    fi
     mv -f "$tmp_bref3" "$out_bref3"
+    rm -rf "$tmpdir" 2>/dev/null || true
     log "[ref_brefs_b38 chr${chr}] Done: $(basename "$out_bref3")"
   }
 
