@@ -414,7 +414,66 @@ setup_chain(){
 
 setup_eagle_maps_b38(){
   local dir="${GENOME_DIR}/eagle_maps_b38"; ensure_dir "$dir"
-  log "==> [eagle_maps_b38] Placeholder: recombination maps for Eagle (gz + tbi) in $dir"
+  local url="https://storage.googleapis.com/broad-alkesgroup-public/Eagle/downloads/tables/genetic_map_hg38_withX.txt.gz"
+  local dest="${dir}/genetic_map_hg38_withX.txt.gz"
+  local tmp="${dest}.part"
+
+  log "==> [eagle_maps_b38] Ensuring Eagle genetic map at $dest"
+
+  # Best-effort size probe
+  local remote_size
+  remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
+    | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
+
+  # If exists and passes gzip -t (and size matches if known), skip
+  if [[ -s "$dest" ]]; then
+    if gzip -t "$dest" 2>/dev/null; then
+      if [[ -n "$remote_size" ]]; then
+        local local_size
+        local_size=$(stat -c '%s' "$dest" 2>/dev/null || stat -f '%z' "$dest")
+        if [[ "$local_size" == "$remote_size" ]]; then
+          log "[eagle_maps_b38] Existing file valid and size matches ($local_size). Skipping."
+          return 0
+        fi
+      else
+        log "[eagle_maps_b38] Existing file valid (gzip test). Skipping."
+        return 0
+      fi
+    else
+      log "[eagle_maps_b38] Existing file failed gzip test; will resume/overwrite."
+      mv -f "$dest" "$tmp"
+    fi
+  fi
+
+  # Resume or fresh download
+  if ! wget -c \
+        --tries=10 \
+        --waitretry=5 \
+        --read-timeout=60 \
+        --timeout=60 \
+        --retry-connrefused \
+        --no-verbose \
+        -O "$tmp" "$url"; then
+    log "[eagle_maps_b38] Download failed. Retrying once after 10s…"
+    sleep 10
+    wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
+  fi
+
+  # Verify size if known and gzip integrity
+  if [[ -n "$remote_size" ]]; then
+    local final_size
+    final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
+    if [[ "$final_size" != "$remote_size" ]]; then
+      die "[eagle_maps_b38] Size mismatch after download ($final_size != $remote_size)"
+    fi
+  fi
+
+  if ! gzip -t "$tmp" 2>/dev/null; then
+    die "[eagle_maps_b38] Gzip integrity check failed after download."
+  fi
+
+  mv -f "$tmp" "$dest"
+  log "[eagle_maps_b38] Ready: $(basename "$dest")"
 }
 
 setup_fasta(){
