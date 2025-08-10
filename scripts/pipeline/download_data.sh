@@ -640,13 +640,173 @@ setup_jars(){
 }
 
 setup_ref_bcfs_b38(){
-  local dir="${GENOME_DIR}/ref_bcfs_b38"; ensure_dir "$dir"
-  log "==> [ref_bcfs_b38] Placeholder: reference BCFs (.bcf/.csi) by chromosome in $dir"
+  local out_dir="${GENOME_DIR}/ref_bcfs_b38"; ensure_dir "$out_dir"
+  local in_dir="${GENOME_DIR}/1000G"
+  local threads="${BCF_THREADS:-${THREADS:-4}}"
+
+  log "==> [ref_bcfs_b38] Converting 1000G VCFs → BCF + CSI into $out_dir (parallel: $threads)"
+
+  # Ensure inputs exist
+  local missing=()
+  local chr
+  for chr in $(seq 1 22); do
+    local in_vcf="${in_dir}/1kGP_high_coverage_Illumina.chr${chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
+    if [[ ! -s "$in_vcf" ]]; then
+      missing+=("chr${chr}")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    die "[ref_bcfs_b38] Missing input VCFs for: ${missing[*]} (run --only 1000G first)"
+  fi
+
+  convert_one(){
+    local chr="$1"
+    local in_vcf="${in_dir}/1kGP_high_coverage_Illumina.chr${chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
+    local base
+    base=$(basename "$in_vcf" .vcf.gz)
+    local out_bcf="${out_dir}/${base}.bcf"
+    local tmp_bcf="${out_bcf}.part"
+    local out_csi="${out_bcf}.csi"
+
+    # Skip if up-to-date
+    if [[ -s "$out_bcf" && -s "$out_csi" && "$out_bcf" -nt "$in_vcf" && "$out_csi" -nt "$out_bcf" ]]; then
+      log "[ref_bcfs_b38 chr${chr}] Up-to-date; skipping."
+      return 0
+    fi
+
+    # Convert to BCF (atomic)
+    log "[ref_bcfs_b38 chr${chr}] Converting → BCF"
+    if ! bcftools view -Ob -o "$tmp_bcf" --threads "$threads" "$in_vcf" >/dev/null 2>&1; then
+      rm -f "$tmp_bcf" 2>/dev/null || true
+      die "[ref_bcfs_b38 chr${chr}] bcftools view failed"
+    fi
+    if [[ ! -s "$tmp_bcf" ]]; then
+      rm -f "$tmp_bcf" 2>/dev/null || true
+      die "[ref_bcfs_b38 chr${chr}] Empty BCF after conversion"
+    fi
+    mv -f "$tmp_bcf" "$out_bcf"
+
+    # Index with CSI
+    log "[ref_bcfs_b38 chr${chr}] Indexing (CSI)"
+    if ! bcftools index -f -c "$out_bcf" >/dev/null 2>&1; then
+      rm -f "$out_csi" 2>/dev/null || true
+      die "[ref_bcfs_b38 chr${chr}] bcftools index failed"
+    fi
+
+    # Sanity check: index exists
+    if [[ ! -s "$out_csi" ]]; then
+      die "[ref_bcfs_b38 chr${chr}] Missing CSI index after indexing"
+    fi
+
+    log "[ref_bcfs_b38 chr${chr}] Done: $(basename "$out_bcf"), $(basename "$out_csi")"
+  }
+
+  # Concurrency controller
+  local -a pids=()
+  local -i max_jobs
+  max_jobs=$(( threads > 0 ? threads : 1 ))
+
+  for chr in $(seq 1 22); do
+    convert_one "$chr" &
+    pids+=("$!")
+    if (( ${#pids[@]} >= max_jobs )); then
+      wait "${pids[0]}" || die "One of the BCF conversions failed."
+      unset 'pids[0]'
+      pids=(${pids[@]})
+    fi
+  done
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" || die "One of the BCF conversions failed."
+  done
+
+  log "[ref_bcfs_b38] All chromosomes converted and indexed."
 }
 
 setup_ref_brefs_b38(){
-  local dir="${GENOME_DIR}/ref_brefs_b38"; ensure_dir "$dir"
-  log "==> [ref_brefs_b38] Placeholder: reference bref3 files by chromosome in $dir"
+  local out_dir="${GENOME_DIR}/ref_brefs_b38"; ensure_dir "$out_dir"
+  local in_dir="${GENOME_DIR}/1000G"
+  local jar_dir="${GENOME_DIR}/jars"
+  local bref3_jar="${jar_dir}/bref3.27Feb25.75f.jar"
+  local java_mem="${BREF3_MEM:-4g}"
+  local threads="${BREF3_THREADS:-${THREADS:-4}}"  # not all bref3 ops are multithreaded, but kept for future compat
+
+  log "==> [ref_brefs_b38] Converting 1000G VCFs → bref3 into $out_dir"
+
+  [[ -s "$bref3_jar" ]] || die "[ref_brefs_b38] Missing $bref3_jar (run --only jars first)"
+
+  # Ensure inputs exist
+  local missing=()
+  local chr
+  for chr in $(seq 1 22); do
+    local in_vcf="${in_dir}/1kGP_high_coverage_Illumina.chr${chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
+    if [[ ! -s "$in_vcf" ]]; then
+      missing+=("chr${chr}")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    die "[ref_brefs_b38] Missing input VCFs for: ${missing[*]} (run --only 1000G first)"
+  fi
+
+  convert_one(){
+    local chr="$1"
+    local in_vcf="${in_dir}/1kGP_high_coverage_Illumina.chr${chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
+    local base
+    base=$(basename "$in_vcf" .vcf.gz)
+    local out_prefix="${out_dir}/${base}"
+    local out_bref3="${out_prefix}.bref3"
+
+    # Skip if up-to-date
+    if [[ -s "$out_bref3" && "$out_bref3" -nt "$in_vcf" ]]; then
+      log "[ref_brefs_b38 chr${chr}] Up-to-date; skipping."
+      return 0
+    fi
+
+    # Work in a temp dir for atomicity
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local cleanup_tmp
+    cleanup_tmp(){ rm -rf "$tmpdir" 2>/dev/null || true; }
+    trap cleanup_tmp RETURN
+
+    local tmp_prefix="${tmpdir}/chr${chr}"
+    local tmp_bref3="${tmp_prefix}.bref3"
+
+    log "[ref_brefs_b38 chr${chr}] Running bref3 converter"
+    # Primary invocation pattern used by beagle's bref3 utility
+    if ! java -Xmx"$java_mem" -jar "$bref3_jar" vcf="$in_vcf" out="$tmp_prefix" >/dev/null 2>&1; then
+      # Retry once (transient issues)
+      log "[ref_brefs_b38 chr${chr}] First attempt failed; retrying once…"
+      sleep 3
+      java -Xmx"$java_mem" -jar "$bref3_jar" vcf="$in_vcf" out="$tmp_prefix" >/dev/null 2>&1 || die "[ref_brefs_b38 chr${chr}] bref3 conversion failed"
+    fi
+
+    [[ -s "$tmp_bref3" ]] || die "[ref_brefs_b38 chr${chr}] Missing output bref3 from converter"
+
+    mv -f "$tmp_bref3" "$out_bref3"
+    log "[ref_brefs_b38 chr${chr}] Done: $(basename "$out_bref3")"
+  }
+
+  # Concurrency controller (limit parallel Java processes)
+  local -a pids=()
+  local -i max_jobs
+  max_jobs=$(( threads > 0 ? threads : 1 ))
+
+  for chr in $(seq 1 22); do
+    convert_one "$chr" &
+    pids+=("$!")
+    if (( ${#pids[@]} >= max_jobs )); then
+      wait "${pids[0]}" || die "One of the bref3 conversions failed."
+      unset 'pids[0]'
+      pids=(${pids[@]})
+    fi
+  done
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" || die "One of the bref3 conversions failed."
+  done
+
+  log "[ref_brefs_b38] All chromosomes converted to bref3."
 }
 
 run_selected(){
