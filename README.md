@@ -97,7 +97,7 @@ pgs_scores/
     └── PGS002149.AMR.sscore.vars # this one should not be empty
 ```
 
-- SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their population's average)
+- SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their subpopulation's average)
 
 ## Redo PCA locally
 
