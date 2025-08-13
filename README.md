@@ -17,7 +17,7 @@ bash scripts/run_setup.sh
 
 **These will (idempotently):**
 
-- Download all required files
+- Download all required files (using the 1000 Genome project expansion)
 - Build bcf and bref3 genome references
 - Generate the alt_alleles.db needed for imputation
 - Run a PCA for subpopulation assignment
@@ -45,15 +45,34 @@ bash scripts/run_user.sh <path/to/23andMe/file>.txt
 
 **These will:**
 
-- Do quality control on the given genome file. `run_qc_genome` writes:
-  1. A single text report with QC/metadata and a final status line (PASS/FAIL).
+- Do quality control (QC) on the given genome file. `run_qc_genome` writes:
+
+  1. A single text report with QC/metadata and a final status line (PASS/FAIL):
+
+  ```
+  # ... QC details
+  ---------------------------------
+  Flags:          (none)
+  QC STATUS:      PASS
+  =================================
+
+
+  # example of a failed QC run:
+  Flags:
+  ---------------------------------
+  - Variant count (1415218) outside expected 23andMe v3/v4/v5 windows; file may be imputed, merged, or from a different vendor
+  QC STATUS:      FAIL
+  =================================
+  ```
+
   2. Filename: {STEM}\_initial_qc.txt where {STEM} is your input filename without .txt/.gz.
-- Run imputation on the user's genome, and generate a directory inside `/users` where all subsequent results will be saved for the user
-- Imputated genome: `/user/{STEM}/<name/of/genome/file>_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
-- Imputation quality control files: in `/user/{STEM}/imputation_qc_reports`
-- User's plink2 files: in `/user/{STEM}/pfiles`
-- Subpopulation assigned using PCA: `/user/{STEM}/ancestry.tsv`
-- User's PGS scores: `/user/{STEM}/pgs_scores`. They are organised in directories, each corresponding to one PGS score:
+
+- Run imputation on the user's genome, and generate a directory called `/users/{STEM}` inside where all subsequent results will be written for the user
+- Imputated genome: `/users/{STEM}/{STEM}_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
+- Imputation quality control files: in `/users/{STEM}/imputation_qc_reports`
+- User's plink2 files: in `/users/{STEM}/pfiles`
+- Subpopulation assigned using PCA: `/users/{STEM}/ancestry.tsv`
+- User's PGS scores: `/users/{STEM}/pgs_scores`. They are organised in directories, each corresponding to one PGS score:
 
 ```
 pgs_scores/
@@ -64,10 +83,12 @@ pgs_scores/
 │   └── PGS000300.AMR.sscore.vars
 └── PGS002149/ # example of a PGS weights file that has overlap with the user's variants
     ├── PGS002149.AMR.log
-    ├── PGS002149.AMR.normalized.tsv
+    ├── PGS002149.AMR.normalized.tsv # this contains both RAW score and SUBPOPULATION-NORMALISED score
     ├── PGS002149.AMR.sscore
     └── PGS002149.AMR.sscore.vars
 ```
+
+- SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their population's average)
 
 ## Redo PCA
 
