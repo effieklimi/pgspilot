@@ -1,46 +1,53 @@
-docker build -t pgspilot .
+# Pilot pipelines for imputation and PGS scoring
 
-docker run -it --rm \
- -v "$(pwd)/genome_data:/app/genome_data:ro" \
- -v "$(pwd)/input_data:/app/input_data:ro" \
- -v "$(pwd)/pca_model:/app/pca_model" \
- -v "$(pwd)/users:/app/users" \
- -v "$(pwd)/traits:/app/traits" \
- -v "$(pwd)/weights_hm:/app/weights_hm" \
- -v "$(pwd)/weights_raw:/app/weights_raw" \
- -v "$(pwd)/calibration:/app/calibration" \
- pgspilot
+### Run once at the start:
 
-
-
-
-
- # End-to-end checklist
-
-1. **Run once (per reference update):**
-
-   - Build PCA model:
-
-   ```
-   $PYTHON fit_pca_1kg.py \
-     --vcf-pattern "$ONEKG_VCF_PATTERN" \
-     --labels "$ONEKG_LABELS" \
-     --out "$PCA_DIR" \
-     --pcs 6 --maf 0.05 --max-missing 0.05 --thin-kb 50 --max-snps 50000
-   ```
-
-   - Build/export scorable_sites.b38.tsv (your “production-lite #3”).
-
-2. **Every time you want to add/update PGS files/traits:**
-
-   ```
-   ./prep_pgs.sh weights_manifest.csv
-   ```
-
-3. **Per each user:**
+1. Generate a docker image:
 
 ```
-./user.sh users/USER123/USER123_23andme.txt.gz
-# or if you already have the imputed VCF:
-./user.sh users/USER123/USER123_imputed_all.vcf.gz --traits "Height,HeartRate"
+cd pgspilot
+docker build --no-cache -t pgspilot .
 ```
+
+2. Perform initial setup:
+
+```
+bash scripts/run_setup.sh
+```
+
+**These will (idempotently):**
+
+- Download all required files
+- Build bcf and bref3 genome references
+- Generate the alt_alleles.db needed for imputation
+- Run a PCA for subpopulation assignment
+
+### Run every time you need to add a new trait to your PGS registry:
+
+```
+# An example for "insomnia"
+bash scripts/run_add_pgs.sh PGS002149
+```
+
+**These will:**
+
+- Fetch the already harmonized PGS weights file from the PGS catalogue
+- Create weights files per subpopulation
+- Append the PGS ID, along with other metadata, to a global registry of all PGSs added so far, stored in `/pgs/weights/harmonized`
+
+### Run every time you need to score a user:
+
+```
+bash run_qc_genome.sh <path/to/23andMe/file>.txt
+bash run_user.sh <path/to/23andMe/file>.txt
+```
+
+**These will:**
+
+- Do quality control on the given genome file
+- Run imputation on the user's genome, and generate a directory inside `/users` where all subsequent results will be saved for the user
+- Imputated genome: `/user/userPath/<name/of/genome/file>_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
+- Imputation quality control files: in `/user/userPath/imputation_qc_reports`
+- User's plink2 files: in `/user/userPath/pfiles`
+- Subpopulation assigned using PCA: `/user/userPath/ancestry.tsv`
+- User's PGS scores: `/user/userPath/pgs_scores`
