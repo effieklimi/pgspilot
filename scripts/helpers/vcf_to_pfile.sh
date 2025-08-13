@@ -4,7 +4,7 @@
 set -euo pipefail
 set -E 
 
-# -------- defaults --------
+# Defaults
 INFO_KEY=""
 INFO_MIN="0.8"
 THREADS="1"
@@ -47,7 +47,7 @@ add_end_header_if_missing() {
   fi
 }
 
-# -------- arg parsing --------
+# Arg parsing
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vcf) VCF="${2:-}"; shift 2;;
@@ -70,7 +70,7 @@ command -v bcftools >/dev/null || die "bcftools not found in PATH"
 command -v tabix >/dev/null || die "tabix not found in PATH"
 [[ "$THREADS" =~ ^[0-9]+$ ]] || die "--threads must be an integer"
 
-# --- status handling for frontend ---
+# Status handling for frontend
 STATUS_JSON="${OUT_PREFIX}.status.json"
 STAGE="startup"
 
@@ -122,7 +122,6 @@ trap cleanup EXIT
 STAGE="index"
 [[ -f "${VCF}.tbi" ]] || tabix -f -p vcf "$VCF" || true
 
-# Add END header if missing before any bcftools/plink2 reads
 add_end_header_if_missing "$VCF"
 
 log "Preparing PLINK2 PFILE from imputed VCF…"
@@ -130,12 +129,10 @@ echo "   - Input VCF: $VCF"
 echo "   - Output prefix: $OUT_PREFIX"
 echo "   - Threads: $THREADS"
 
-# Tool versions
 BCFTOOLS_VER="$(bcftools --version | head -n1 || true)"
 PLINK2_VER="$(plink2 --version 2>/dev/null | head -n1 || true)"
 TABIX_VER="$(tabix --version 2>/dev/null | head -n1 || true)"
 
-# Detect dosage field (prefer DS, fallback GP)
 VCF_HEADER="$(bcftools view -h "$VCF")"
 if echo "$VCF_HEADER" | grep -q 'ID=DS,'; then
   DOSAGE_FIELD="DS"
@@ -167,7 +164,7 @@ fi
 # Count samples quickly
 SAMPLE_CT="$(bcftools query -l "$VCF" | wc -l | awk '{print $1}')"
 
-# ------------- filtering (NO MAF) -------------
+# Filtering (NO MAF)
 VCF_FOR_PLINK="$VCF"
 TMP_FILT=""
 
@@ -203,7 +200,7 @@ if ! bcftools view -h "$VCF_FOR_PLINK" | grep -q 'ID=END,'; then
   VCF_FOR_PLINK="$FOR_PLINK"
 fi
 
-# ------------- convert to PFILE -------------
+# Convert to PFILE
 STAGE="convert"
 HTS_LOG_LEVEL=ERROR plink2 \
   --threads "$THREADS" \
@@ -244,7 +241,7 @@ if [[ -n "$EXTRACT_SNPS" ]]; then
   fi
 fi
 
-# ------------- QC COUNTS + JSON REPORT -------------
+# QC COUNTS + JSON REPORT
 STAGE="qc"
 qc_json="${OUT_PREFIX}.qc.json"
 
@@ -314,7 +311,7 @@ RUN_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   printf '}\n'
 } > "$qc_json"
 
-# ---- final status evaluation for frontend ----
+# Final status evaluation for frontend
 # Tightened gates live HERE (after QC JSON is written), using both absolute and relative thresholds.
 STAGE="finalize"
 STATUS="ok"
@@ -369,7 +366,7 @@ fi
 
 write_status "$STATUS" "$MSG"
 
-# ------------- cleanup temp -------------
+# Cleanup temp
 if [[ -n "$TMP_FILT" && -f "$TMP_FILT" ]]; then :; fi
 
 log "Wrote: ${OUT_PREFIX}.pgen .pvar .psam"

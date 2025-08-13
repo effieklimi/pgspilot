@@ -99,7 +99,7 @@ pgs_scores/
 
 - SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their population's average)
 
-## Redo PCA locally (if you want)
+## Redo PCA locally
 
 **Important!** PCA is used to assign each user to a subpopulation out of EUR, AMR, SAS, EAS, AFR, for PGS scoring purposes. It is **not** an ancestry, and it should not be reported as such to the user. Instead, it assigns the user into the subpopulation he/she is most similar to, specifically within the 1000 Genomes expanded panel used here. This is expected to positivelly correlate with the ancestry of the user, but it is not a robust prediction of their ancestry.
 
@@ -107,7 +107,6 @@ In the current pilot implementation, the PCA was run with 6 principal components
 
 **Things to keep in mind and steps that need to be taken:**
 
-- Make sure that the analyses work on your local machine with the files generated using 6 prinicipal components
 - Then, delete everything inside the `pca_model` folder
 - Re-run the setup script with `bash scripts/run_setup.sh`. This should re-run the PCA
 - This might take some time to run

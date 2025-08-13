@@ -102,11 +102,9 @@ for PGSID in "$@"; do
   fi
 done
 
-# Build/refresh standardization only if any requested PGS lacks entries
 if (( ${#MISSING_STD[@]} > 0 )); then
   echo "==> [CONTAINER] Building/refreshing standardization (missing for: ${MISSING_STD[*]})"
   python3 "/app/scripts/analyses/build_standardization.py"
-  # Standardization written to $STD_MAIN
 else
   echo "✓ [CONTAINER] Standardization already present for all requested PGS IDs. Skipping."
 fi
