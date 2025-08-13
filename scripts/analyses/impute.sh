@@ -486,7 +486,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bref3"
-  # Beagle PLINK maps use the canonical name below
+  # Canonical Beagle PLINK map filename
   MAP="${MAP_DIR_BEAGLE}/plink.chr${CHR}.GRCh38.map"
   TEMP_MAP=$(mktemp) 
 
