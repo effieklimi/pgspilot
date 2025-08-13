@@ -149,6 +149,11 @@ score_one(){
   local pgsid
   pgsid="${base%%.*}"
 
+  # Ensure per-PGS output directory and prefix
+  local out_dir="${RESULTS_DIR}/${pgsid}"
+  mkdir -p "$out_dir"
+  local out_pref="${out_dir}/${pgsid}.${SUBPOP}"
+
   local score_tsv="$work/${pgsid}.${SUBPOP}.score.tsv"
   local stats_path="$work/${pgsid}.${SUBPOP}.stats"
   # Build minimal score (ID A1 BETA) from harmonized weights
@@ -253,10 +258,9 @@ score_one(){
       echo "weights_path	${weights_path}"
       echo "variants_in_weights	${scanned}"
       echo "variants_matched	${matched}"
-    } > "${RESULTS_DIR}/${pgsid}.${SUBPOP}.skipped.tsv"
+    } > "${out_pref}.skipped.tsv"
 
     # Also emit empty-shaped PLINK outputs so downstream can consume uniformly
-    local out_pref="${RESULTS_DIR}/${pgsid}.${SUBPOP}"
     {
       printf "FID\tIID\tSCORE1_SUM\tSCORE1_AVG\n"
       printf "%s\t%s\t0\t0\n" "${USER_ID}" "${USER_ID}"
@@ -307,13 +311,13 @@ score_one(){
   plink2 \
     --pfile "$work/user_stdids" \
     --score "$score_tsv" 1 2 3 header-read no-mean-imputation list-variants \
-    --out "${RESULTS_DIR}/${pgsid}.${SUBPOP}"
+    --out "${out_pref}"
 
   # 2) Derive user-level normalized score (z-score) using standardization.tsv if available
   #    Output one-row TSV: <pgs_id, subpop, iid, raw_score, zscore, mean, sd, matched_variant_count, weights_path, trait>
-  local sscore_path="${RESULTS_DIR}/${pgsid}.${SUBPOP}.sscore"
-  local svars_path="${RESULTS_DIR}/${pgsid}.${SUBPOP}.sscore.vars"
-  local norm_out="${RESULTS_DIR}/${pgsid}.${SUBPOP}.normalized.tsv"
+  local sscore_path="${out_pref}.sscore"
+  local svars_path="${out_pref}.sscore.vars"
+  local norm_out="${out_pref}.normalized.tsv"
 
   # Count matched variants (exclude header)
   local matched_variants=0

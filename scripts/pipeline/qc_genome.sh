@@ -13,12 +13,38 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
 
   DOCKER_IMAGE="${DOCKER_IMAGE:-pgspilot}"
 
+  # Detect host arch and default to amd64 emulation on arm hosts (Apple Silicon)
+  DOCKER_PLATFORM="${DOCKER_PLATFORM:-}"
+  if [[ -z "$DOCKER_PLATFORM" ]]; then
+    host_arch="$(uname -m || true)"
+    case "$host_arch" in
+      arm64|aarch64)
+        DOCKER_PLATFORM="linux/amd64"
+        ;;
+    esac
+  fi
+
+  # Require exactly one input file on host and mount its directory
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 </path/to/23andme_raw.txt[.gz]>" >&2
+    exit 1
+  fi
+  HOST_INFILE="$1"
+  if [[ ! -f "$HOST_INFILE" ]]; then
+    echo "Error: Input file not found: $HOST_INFILE" >&2
+    exit 1
+  fi
+  ABS_INPUT_DIR=$(cd -- "$(dirname -- "$HOST_INFILE")" &> /dev/null && pwd)
+  INPUT_BASENAME=$(basename -- "$HOST_INFILE")
+
   # Re-invoke this script inside the container, forwarding all args
   docker run --rm \
+    ${DOCKER_PLATFORM:+--platform="$DOCKER_PLATFORM"} \
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
+    -v "${ABS_INPUT_DIR}:/app/input_data" \
     "$DOCKER_IMAGE" \
-    /app/scripts/pipeline/qc_genome.sh "$@"
+    /app/scripts/pipeline/qc_genome.sh "/app/input_data/$INPUT_BASENAME"
 
   exit 0
 fi

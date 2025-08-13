@@ -20,7 +20,7 @@ def read_sscore(path, user_iid):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results-dir", required=True, help="Directory with *.sscore and *.sscore.vars")
+    ap.add_argument("--results-dir", required=True, help="Directory containing PGS results; searched recursively for *.sscore and *.sscore.vars")
     ap.add_argument("--registry", default="/app/pgs/weights/harmonized/registry.csv")
     ap.add_argument("--standardization", required=True, help="TSV: pgs_id subpop mean sd")
     ap.add_argument("--user-iid", required=True)
@@ -89,7 +89,9 @@ def main():
     subpop_norm = str(args.subpop).strip().upper()
     payload = {"user_iid": args.user_iid, "subpop": subpop_norm, "scores": []}
 
-    for sscore in sorted(glob.glob(os.path.join(args.results_dir, "*.sscore"))):
+    # Recurse into subdirectories to support per-PGS layout results_dir/PGS_ID/PGS_ID.SUBPOP.*
+    sscore_paths = glob.glob(os.path.join(args.results_dir, "**", "*.sscore"), recursive=True)
+    for sscore in sorted(sscore_paths):
         base = os.path.basename(sscore).replace(".sscore", "")
         parts = base.split(".")
         file_subpop = parts[-1].upper() if len(parts) >= 2 else ""
