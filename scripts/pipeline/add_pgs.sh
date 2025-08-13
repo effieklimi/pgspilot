@@ -111,4 +111,4 @@ else
   echo "✓ [CONTAINER] Standardization already present for all requested PGS IDs. Skipping."
 fi
 
-echo "✅ Done. Outputs in: ${WEIGHTS_HM_DIR}"
+echo "Done. Outputs in: ${WEIGHTS_HM_DIR}"

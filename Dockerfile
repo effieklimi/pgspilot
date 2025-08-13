@@ -105,12 +105,12 @@ COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/pipeline/user.sh \
            /app/scripts/pipeline/add_pgs.sh \
            /app/scripts/pipeline/setup.sh \
-           /app/scripts/pipeline/pruned_panel.sh \
+           /app/scripts/helpers/pruned_panel.sh \
            /app/scripts/pipeline/qc_genome.sh \
            /app/scripts/pipeline/download_data.sh \
            /app/scripts/pipeline/build_refs.sh \
-           /app/scripts/pipeline/vcf_to_pfile.sh \
-           /app/scripts/pipeline/per_ancestry_maf.sh \
+           /app/scripts/helpers/vcf_to_pfile.sh \
+           /app/scripts/helpers/per_ancestry_maf.sh \
            /app/scripts/analyses/impute.sh
 
 # 5. Set the default command to run when the container starts interactively

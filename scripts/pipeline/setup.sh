@@ -79,7 +79,7 @@ if [ -f "$PRUNED_PATH" ]; then
   echo "✓ [CONTAINER] Pruned panel already exists at $PRUNED_PATH. Skipping."
 else
   echo "==> [CONTAINER] Running pruned panel script..."
-  bash "/app/scripts/pipeline/pruned_panel.sh"
+  bash "/app/scripts/helpers/pruned_panel.sh"
 fi
 
 # 2. Make per-ancestry maf files
@@ -104,7 +104,7 @@ if [ "$all_exist" = true ]; then
   echo "✓ [CONTAINER] All per-ancestry MAF files already exist. Skipping generation."
 else
   echo "==> [CONTAINER] Running per-ancestry MAF script..."
-  bash "/app/scripts/pipeline/per_ancestry_maf.sh"
+  bash "/app/scripts/helpers/per_ancestry_maf.sh"
 fi
 
 

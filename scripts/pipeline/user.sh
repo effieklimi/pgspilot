@@ -170,7 +170,7 @@ else
 
 
   # 2) Preparing PLINK2 PFILE from imputed VCF…
-  VCF_TO_PFILE_SH="/app/scripts/pipeline/vcf_to_pfile.sh"
+  VCF_TO_PFILE_SH="/app/scripts/helpers/vcf_to_pfile.sh"
 
   INFO_KEY="${IMP_INFO_KEY:-}"           # e.g., R2, INFO, or IMPINFO; leave empty to auto-detect
   INFO_MIN="${IMP_INFO_MIN:-0.8}"        # threshold for the chosen INFO key
