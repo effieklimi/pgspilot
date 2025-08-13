@@ -29,12 +29,15 @@ bash scripts/run_setup.sh
 bash scripts/run_add_pgs.sh PGS002149
 ```
 
+**Key output:** a folder called `/pgs/weights` in the project route with everything you need to score users later.
+
 **These will:**
 
 - Fetch the already harmonized PGS weights file from the PGS catalogue
 - Create weights files per subpopulation
 - Append the PGS ID, along with other metadata, to a global registry of all PGSs added so far, stored in `/pgs/weights/harmonized`
 - Standardize it per subpopulation (needed for subpopulation-based ranking)
+- Keep a stats summary of the subpopulation standardization, per PGS ID
 
 ## Run every time you need to score a user:
 
@@ -42,6 +45,11 @@ bash scripts/run_add_pgs.sh PGS002149
 bash scripts/run_qc_genome.sh <path/to/23andMe/file>.txt
 bash scripts/run_user.sh <path/to/23andMe/file>.txt
 ```
+
+**The key output:** a file called `PGSXXXX.SUB.normalized.tsv` per PGS ID.
+
+- **PGSXXXX:** PGS ID
+- **SUB:** the subpopulation the user was assigned using the PCA (one of EUR, AMR, SAS, EAS, AFR)
 
 **These will:**
 

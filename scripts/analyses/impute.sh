@@ -181,22 +181,6 @@ debug_vcf () {
   bcftools view -H -r 1:1-5000 "$vcf" | head -n 3
 }
 
-# Ensure VCF header declares INFO/END if records may use it
-add_end_header_if_missing() {
-  local vcf="$1"
-  [[ -f "$vcf" ]] || return 0
-  if ! bcftools view -h "$vcf" | grep -q 'ID=END,'; then
-    local tmp
-    tmp="${vcf%.vcf.gz}.withEND.vcf.gz"
-    HTS_LOG_LEVEL=ERROR bcftools annotate \
-      -h <(printf '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant">\n') \
-      -Oz -o "$tmp" "$vcf"
-    tabix -f -p vcf "$tmp" || true
-    mv "$tmp" "$vcf"
-    mv "${tmp}.tbi" "${vcf}.tbi"
-  fi
-}
-
 ### 1. paths/vars 
 THREADS=${THREADS:-4}
 
@@ -379,76 +363,41 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 
 
   elif [[ "$INPUT_BUILD" == 38 ]]; then
-    # 1) TSV → chr-prefixed VCF (build38)
-    echo "==> Pre-processing TSV to add 'chr' prefix..."
+    echo "==> Pre-processing TSV to add 'chr' prefix (build38)…"
     TEMP_TSV_GZ="${OUT_DIR}/temp_with_chr.tsv.gz"
-    zcat "$RAW_GZ" \
-      | awk 'BEGIN{OFS="\t"} /^#/ {print; next} {$2="chr"$2; print}' \
-      | bgzip -c > "$TEMP_TSV_GZ"
+    zcat "$RAW_GZ" | \
+      awk 'BEGIN{OFS="\t"} /^#/ {print; next} !/^#/ {$2="chr"$2; print}' | \
+      bgzip -c > "$TEMP_TSV_GZ"
 
-    echo "==> Converting TSV → VCF (build38)"
-    VCF38_CHR_GZ="${OUT_DIR}/${STEM}.build38.chr.vcf.gz"
-    bcftools convert --tsv2vcf "$TEMP_TSV_GZ" -f "$FASTA_38" -s "$STEM" -Oz -o "$VCF38_CHR_GZ"
-
+    echo "==> TSV → VCF (build38) using pre-processed TSV"
+    bcftools convert \
+      --tsv2vcf "$TEMP_TSV_GZ" \
+      -f "$FASTA_38" \
+      -s "$STEM" \
+      -Oz -o "$CHR_VCF" \
+      2>"${OUT_DIR}/${STEM}.tsv2vcf.b38.log"
     rm "$TEMP_TSV_GZ"
-    tabix -f -p vcf "$VCF38_CHR_GZ"
-    count_vcf_records "$VCF38_CHR_GZ" "Initial VCF (chr-prefix)"
-
-    # 2) QC raw conversion
-    echo "==> QC: initial_conversion"
-    run_qc_analysis "$VCF38_CHR_GZ" "initial_conversion" "$QC_DIR"
-
-    # 3) Patch missing ALT alleles
-    echo "==> Patching missing ALT alleles"
-    ALT_DB="${ROOT_DIR}/genome_data/alt_alleles.db"
-    [[ -f "$ALT_DB" ]] || { echo "✗ Missing $ALT_DB"; exit 1; }
-    python scripts/helpers/alt_fix.py --db "$ALT_DB" "$VCF38_CHR_GZ"
-    ALT_VCF="${VCF38_CHR_GZ%.vcf.gz}.alt.vcf.gz"
-    [[ -f "$ALT_VCF" ]] || { echo "✗ Expected $ALT_VCF"; exit 1; }
-    count_vcf_records "$ALT_VCF" "VCF after alt_fix"
-
-    # 4) Sort & index (no liftover; operate on alt-fixed build38 VCF)
-    echo "==> Sorting VCF (chr-prefix)"
-    bcftools sort -Oz -o "$CHR_VCF" "$ALT_VCF"
     tabix -f -p vcf "$CHR_VCF"
-    count_vcf_records "$CHR_VCF" "Post-sort VCF (chr-prefixed)"
+    count_vcf_records "$CHR_VCF" "Initial VCF (build38)"
 
-    debug_vcf "$CHR_VCF"
+    echo "==> Running QC on initial build38 VCF…"
+    run_qc_analysis "$CHR_VCF" "initial_conversion" "$QC_DIR"
 
-    # 5) QC after sorting (mirror post_liftover step name)
-    echo "==> QC: post_liftover"
-    run_qc_analysis "$CHR_VCF" "post_liftover" "$QC_DIR"
+    ALT_DB="${ROOT_DIR}/static_files/alt_alleles.db"
+    echo "==> patch missing ALT alleles"
+    python "${ROOT_DIR}/scripts/helpers/alt_fix.py" --db "$ALT_DB" "$CHR_VCF"
+    count_vcf_records "${STEM}.alt.vcf.gz" "VCF after alt_fix (build38)"
 
-    # 6) Replace contig header with hg38 lengths
-    echo "==> Re-headering $CHR_VCF with hg38 contig lengths"
-    REHEADERED="${CHR_VCF%.vcf.gz}.reheadered.vcf.gz"
+    echo "==> Running QC on ALT-patched VCF…"
+    run_qc_analysis "${STEM}.alt.vcf.gz" "post_alt_fix" "$QC_DIR"
 
-    bcftools reheader -f "${FASTA_38}.fai" "$CHR_VCF" \
-      | bcftools view -Oz -o "$REHEADERED" -
+    echo "==> Normalizing and selecting primary contigs"
+    bcftools norm "$CHR_VCF" -Oz -o "$PRIM_VCF"
+    tabix -f -p vcf "$PRIM_VCF"
+    count_vcf_records "$PRIM_VCF" "Normalized primary-contig VCF"
 
-    debug_vcf "$REHEADERED"
-
-    tabix -f -p vcf "$REHEADERED"
-    mv "$REHEADERED"        "$CHR_VCF"
-    mv "${REHEADERED}.tbi"  "$CHR_VCF.tbi"
-    echo "  ✓ Header replaced and indexed: $CHR_VCF"
-
-    # 7) Strip ambiguous SNPs before phasing
-    echo "==> Removing strand-ambiguous (A/T, C/G) SNPs"
-    FILTERED_VCF="${OUT_DIR}/${STEM}_stranded_clean.vcf.gz"
-    bcftools view -e '( REF="A" && ALT="T" ) || ( REF="T" && ALT="A" ) || ( REF="C" && ALT="G" ) || ( REF="G" && ALT="C" )' \
-      -Oz -o "$FILTERED_VCF" "$CHR_VCF"
-
-    debug_vcf "$FILTERED_VCF"
-
-    tabix -f -p vcf "$FILTERED_VCF"
-    mv "$FILTERED_VCF" "$CHR_VCF"
-    mv "${FILTERED_VCF}.tbi"  "$CHR_VCF.tbi"
-    count_vcf_records "$CHR_VCF" "Strand-cleaned VCF"
-
-    # 8) Final pre-imputation QC
-    echo "==> QC: pre_imputation"
-    run_qc_analysis "$CHR_VCF" "pre_imputation" "$QC_DIR"
+    echo "==> Running QC on final pre-imputation VCF (build38)…"
+    run_qc_analysis "$PRIM_VCF" "pre_imputation" "$QC_DIR"
 
   else
     echo "✗ Unexpected INPUT_BUILD=$INPUT_BUILD"
@@ -585,8 +534,6 @@ for CHR in {21..22}; do
     echo "✗ Missing imputed VCF for chr${CHR}: $VC" >&2
     missing_flag=1
   else
-    # Ensure END header exists to avoid htslib warnings downstream
-    add_end_header_if_missing "$VC"
     tabix -f -p vcf "$VC"
     echo "$VC" >> "$LIST"
   fi
@@ -599,8 +546,6 @@ if [[ $missing_flag -ne 0 ]]; then
 fi
 
 bcftools concat -f "$LIST" -Oz -o "$FINAL_VCF"
-# Add END header on the concatenated VCF if needed, then (re)index
-add_end_header_if_missing "$FINAL_VCF"
 tabix -f -p vcf "$FINAL_VCF"
 rm -f "$LIST"
 
