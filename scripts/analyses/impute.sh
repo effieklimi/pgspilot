@@ -1,29 +1,23 @@
 #!/usr/bin/env bash
 ###############################################################################
-# impute.sh – 23andMe text → GRCh38 phased & imputed VCF (chr1–22)
+# 23andMe raw genotype text file -> hg38 phased & imputed VCF (chr1–22)
 #
 # USAGE:
 #   ./impute_23andme.sh  <path/to/23andme_genome>.txt[.gz]
 #
 # OUTPUTS (per sample STEM from input filename):
-#   ${STEM}_results/
-#     ├─ phased_dir/            # Eagle output per chr
-#     ├─ imputed_dir/           # Beagle output per chr (with DS & GP)
+#   ${STEM}/          # Beagle output per chr (with DS & GP)
 #     ├─ imputation_qc_reports/            # QC analysis reports
 #     └─ ${STEM}_imputed_all.vcf.gz (+ .tbi)
 #
 # NOTES:
-#   • Input build auto-detected (b37|b38); b36/hg18 not supported here.
-#   • Uses 1000G high-coverage GRCh38 refs for Eagle and Beagle.
-#   • DS (dosage of ALT) is included for scoring; GP also kept (fallback).
-#   • Ancestry-specific PRS standardization is NOT done here.
+#   • Input build auto-detected (b37 and b38). b36/hg18 not supported here
+#   • DS (dosage of ALT) is included for scoring. GP also kept (fallback)
 ###############################################################################
 set -Eeuo pipefail
 [[ "${DEBUG:-}" == 1 ]] && set -x   # run pipeline with DEBUG=1 for verbose log
 exec 2>&1  
 
-### --- START: DEBUG HELPER FUNCTION ---
-# This function will count the number of data records (lines without '#') in a VCF file.
 count_vcf_records() {
   local vcf_file="$1"
   local description="$2"
@@ -32,15 +26,13 @@ count_vcf_records() {
     echo "  [DEBUG] ✗ File not found for counting: $vcf_file"
     return
   fi
-  # Use bcftools view -H to get only data lines, then count them.
   count=$(bcftools view -H "$vcf_file" | wc -l)
   echo "  [DEBUG] ✓ Records in $description ($vcf_file): $count"
 }
 
-### --- QC ANALYSIS FUNCTION ---
 run_qc_analysis() {
   local vcf_file="$1"
-  local qc_type="$2"  # "pre_imputation" or "post_imputation"
+  local qc_type="$2"
   local qc_dir="$3"
   
   echo "==> Running $qc_type QC analysis on: $vcf_file"
@@ -58,21 +50,17 @@ run_qc_analysis() {
   echo "Timestamp: $(date)" >> "$report_file"
   echo "" >> "$report_file"
   
-  # Basic stats
   echo "=== BASIC STATS ===" >> "$report_file"
   bcftools stats "$vcf_file" >> "$report_file" 2>/dev/null || echo "Could not generate basic stats" >> "$report_file"
   
-  # Sample count
   echo "=== SAMPLE INFORMATION ===" >> "$report_file"
   local sample_count=$(bcftools query -l "$vcf_file" | wc -l)
   echo "Number of samples: $sample_count" >> "$report_file"
   bcftools query -l "$vcf_file" >> "$report_file"
   
-  # Variant count per chromosome
   echo "=== VARIANTS PER CHROMOSOME ===" >> "$report_file"
   bcftools query -f '%CHROM\n' "$vcf_file" | sort | uniq -c >> "$report_file"
   
-  # Missing rate analysis
   echo "=== MISSING RATE ANALYSIS ===" >> "$report_file"
   local total_gts=$(bcftools query -f '[%GT\t]\n' "$vcf_file" | wc -w)
   local missing_gts=$(bcftools query -f '[%GT\t]\n' "$vcf_file" | grep -o '\./\.\|\./' | wc -l)
@@ -81,7 +69,6 @@ run_qc_analysis() {
   echo "Missing genotypes: $missing_gts" >> "$report_file"
   echo "Overall missing rate: $missing_rate" >> "$report_file"
   
-  # Check phasing status
   echo "=== PHASING STATUS ===" >> "$report_file"
   local phased_count=$(bcftools query -f '[%GT\t]\n' "$vcf_file" | head -1000 | grep -o '|' | wc -l)
   local unphased_count=$(bcftools query -f '[%GT\t]\n' "$vcf_file" | head -1000 | grep -o '/' | wc -l)
@@ -89,12 +76,9 @@ run_qc_analysis() {
   echo "Unphased genotypes (sample of 1000 records): $unphased_count" >> "$report_file"
   
   if [[ "$qc_type" == "post_imputation" ]]; then
-    # DR2 analysis for post-imputation
     echo "=== IMPUTATION QUALITY (DR2) ANALYSIS ===" >> "$report_file"
     
-    # Check if DR2 is declared in the header
      if bcftools view -h "$vcf_file" | grep -q 'ID=DR2,'; then
-      # DR2 statistics
       bcftools query -f '%INFO/DR2\n' "$vcf_file" | awk '
       BEGIN { sum=0; count=0; high_qual=0; med_qual=0; low_qual=0 }
       {
@@ -118,7 +102,6 @@ run_qc_analysis() {
         }
       }' >> "$report_file"
       
-      # DR2 distribution
       echo "=== DR2 DISTRIBUTION ===" >> "$report_file"
       bcftools query -f '%INFO/DR2\n' "$vcf_file" | awk '
       BEGIN { bin1=0; bin2=0; bin3=0; bin4=0; bin5=0; total=0 }
@@ -148,7 +131,6 @@ run_qc_analysis() {
   
   echo "  [QC] ✓ $qc_type QC report saved: $report_file"
   
-  # Display key findings to console
   echo "  [QC] Key findings:"
   echo "    Sample count: $sample_count"
   echo "    Missing rate: $missing_rate"
@@ -171,7 +153,7 @@ run_qc_analysis() {
   fi
 }
 
-### ───────────────────────────── 0. sanity ─────────────────────────────────###
+### 0. sanity 
 [[ $# -eq 1 ]] || { echo "Usage: $0 <path/to/genome_file>.txt[.gz]"; exit 1; }
 IN_TXT=$1
 [[ -f $IN_TXT ]] || { echo "Input file not found: $IN_TXT"; exit 1; }
@@ -199,7 +181,7 @@ debug_vcf () {
   bcftools view -H -r 1:1-5000 "$vcf" | head -n 3
 }
 
-### ─────────────────────────── 1. paths/vars ───────────────────────────────###
+### 1. paths/vars 
 THREADS=${THREADS:-4}
 
 ROOT_DIR="/app"
@@ -230,8 +212,12 @@ if [ -d "$MAP_DIR_EAGLE" ]; then
   echo "  Files in MAP_DIR_EAGLE:"
   ls -la "$MAP_DIR_EAGLE/" | head -5
 fi
+echo "  MAP_DIR_BEAGLE: $MAP_DIR_BEAGLE $([ -d "$MAP_DIR_BEAGLE" ] && echo "✓" || echo "✗")"
+if [ -d "$MAP_DIR_BEAGLE" ]; then
+  echo "  Files in MAP_DIR_BEAGLE:"
+  ls -la "$MAP_DIR_BEAGLE/" | head -5
+fi
 
-# ---- per-sample folders & files ------------------------------------------- #
 OUT_DIR="${ROOT_DIR}/users/${STEM}"
 PHASED_DIR="${OUT_DIR}/phased_dir"
 IMPUTED_DIR="${OUT_DIR}/imputed_dir"
@@ -249,7 +235,7 @@ CHR_VCF="${OUT_DIR}/${STEM}.lift38.primary.chr.vcf.gz"
 
 FINAL_VCF="${OUT_DIR}/${STEM}_imputed_all.vcf.gz"
 
-### ────────────────── 2. gzip copy + detect build ──────────────────────────###
+### 2. gzip copy + detect build 
 echo "==> copy + gzip raw file"
 if [[ $IN_TXT == *.gz ]]; then
   cp "$IN_TXT" "$RAW_GZ"
@@ -284,7 +270,7 @@ if [[ "$INPUT_BUILD" == "auto" ]]; then
 fi
 echo "==> Detected/selected input build: GRCh${INPUT_BUILD}"
 
-### ─────────────────── 3. TSV→VCF and (conditional) liftover ─────────────###
+### 3. TSV→VCF and (conditional) liftover
 if [[ "$INPUT_BUILD" == 37 ]]; then
 
   # 1) TSV → chr-prefixed VCF (build37)
@@ -331,7 +317,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
   echo "==> QC: post_liftover"
   run_qc_analysis "$CHR_VCF" "post_liftover" "$QC_DIR"
 
-  # --- 7) Replace contig header with hg38 lengths ---------------------------
+  # 7) Replace contig header with hg38 lengths
   echo "==> Re-headering $CHR_VCF with hg38 contig lengths"
   REHEADERED="${CHR_VCF%.vcf.gz}.reheadered.vcf.gz"
 
@@ -407,7 +393,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
   fi
 
 
-  ### ─────────────────────────── 4. Eagle phasing ────────────────────────────###
+  ### 4. Eagle phasing
   for CHR in {1..22}; do
     REF_BCF="${REF_DIR_EAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bcf"
     [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
@@ -438,10 +424,10 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
           !seen[pos]++ { print CHR, pos, rate, map }
         ' OFS=" " |
 
-      # ---- 2. sort by physical position --------------------------------------
+      # 2. sort by physical position 
         LC_ALL=C sort -t' ' -k2,2n |
 
-      # ---- 3. drop rows whose cM falls below previous -------------------------
+      # 3. drop rows whose cM falls below previous
         awk '
           NR==1 { prev_cM=$4; print; next }
           $4 >= prev_cM { print; prev_cM=$4 }
@@ -496,17 +482,37 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
         "$QC_DIR"
   done
 
-### ─────────────────────────── 5. Beagle imputation ────────────────────────###
+### 5. Beagle imputation
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bref3"
-  MAP="${MAP_DIR_BEAGLE}/plink.chr${CHR}GRCh38.map"
+  # Beagle PLINK maps are named plink.chr${CHR}.GRCh38.map (note the dot)
+  # Add a robust fallback in case of naming variations
+  MAP=""
+  MAP_CAND1="${MAP_DIR_BEAGLE}/plink.chr${CHR}.GRCh38.map"
+  MAP_CAND2="${MAP_DIR_BEAGLE}/plink.chr${CHR}GRCh38.map"
+  if [[ -f "$MAP_CAND1" ]]; then
+    MAP="$MAP_CAND1"
+  elif [[ -f "$MAP_CAND2" ]]; then
+    MAP="$MAP_CAND2"
+  else
+    # Try to auto-detect any matching map for this chromosome
+    shopt -s nullglob
+    set -- "${MAP_DIR_BEAGLE}"/*"chr${CHR}"*.map
+    if [[ $# -ge 1 && -f "$1" ]]; then
+      MAP="$1"
+    fi
+    shopt -u nullglob
+  fi
   TEMP_MAP=$(mktemp) 
 
   trap 'rm -f "$TEMP_MAP"' EXIT HUP INT QUIT TERM
 
   if [[ ! -f "$GT" ]] || [[ ! -f "$REF" ]] || [[ ! -f "$MAP" ]]; then
     echo "==> skip chr${CHR} (missing one or more input files: VCF, REF, or MAP)"
+    [[ -f "$GT" ]] || echo "  - missing GT: $GT"
+    [[ -f "$REF" ]] || echo "  - missing REF: $REF"
+    [[ -f "$MAP" ]] || echo "  - missing MAP (expected like plink.chr${CHR}.GRCh38.map) in $MAP_DIR_BEAGLE"
     rm -f "$TEMP_MAP" 
     continue 
   fi
