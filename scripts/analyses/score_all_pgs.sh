@@ -19,6 +19,24 @@ if [[ ! -d "$HM_DIR" ]]; then
   exit 2
 fi
 
+# Standardization table (PGS x SUBPOP -> mean, sd) for z-scoring
+# Priority: $STANDARDIZATION_TSV -> /app/... -> ./pgs/...
+STANDARDIZATION_TSV_DEFAULT="/app/pgs/weights/standardization/standardization.tsv"
+STANDARDIZATION_TSV_ALT="/pgs/weights/standardization/standardization.tsv"
+STANDARDIZATION_TSV_LOCAL="pgs/weights/standardization/standardization.tsv"
+STANDARDIZATION_TSV="${STANDARDIZATION_TSV:-}"
+if [[ -z "$STANDARDIZATION_TSV" ]]; then
+  if [[ -s "$STANDARDIZATION_TSV_DEFAULT" ]]; then
+    STANDARDIZATION_TSV="$STANDARDIZATION_TSV_DEFAULT"
+  elif [[ -s "$STANDARDIZATION_TSV_ALT" ]]; then
+    STANDARDIZATION_TSV="$STANDARDIZATION_TSV_ALT"
+  elif [[ -s "$STANDARDIZATION_TSV_LOCAL" ]]; then
+    STANDARDIZATION_TSV="$STANDARDIZATION_TSV_LOCAL"
+  else
+    STANDARDIZATION_TSV=""
+  fi
+fi
+
 work="$(mktemp -d -p /tmp scorepgs.XXXX)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$RESULTS_DIR"
@@ -244,6 +262,44 @@ score_one(){
       printf "%s\t%s\t0\t0\n" "${USER_ID}" "${USER_ID}"
     } > "${out_pref}.sscore"
     printf "ID\n" > "${out_pref}.sscore.vars"
+
+    # Emit normalized summary as well, using standardization mean/sd when available
+    local mean_val="" sd_val="" trait_val="" zscore="" err=""
+    if [[ -n "$STANDARDIZATION_TSV" && -s "$STANDARDIZATION_TSV" ]]; then
+      local _std_line
+      _std_line=$(awk -v pgs="$pgsid" -v sp="$SUBPOP" 'BEGIN{FS="\t"; OFS="\t"}
+        NR==1{
+          for(i=1;i<=NF;i++){k=$i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k); k=tolower(k); m[k]=i}
+          c_pgs=(m["pgs_id"]?m["pgs_id"]:(m["pgs"]?m["pgs"]:0));
+          c_sp=(m["subpop"]?m["subpop"]:(m["population"]?m["population"]:0));
+          c_mean=(m["mean"]?m["mean"]:0);
+          c_sd=(m["sd"]?m["sd"]:0);
+          c_trait=(m["trait"]?m["trait"]:0);
+          next
+        }
+        c_pgs && c_sp && c_mean && c_sd {
+          if($c_pgs==pgs && toupper($c_sp)==sp){
+            printf("%s\t%s\t%s\n", $c_mean, $c_sd, (c_trait?$c_trait:"") );
+            exit
+          }
+        }
+      ' "$STANDARDIZATION_TSV" 2>/dev/null || true)
+      mean_val=$(printf '%s' "$_std_line" | cut -f1)
+      sd_val=$(printf '%s' "$_std_line" | cut -f2)
+      trait_val=$(printf '%s' "$_std_line" | cut -f3)
+    fi
+    if [[ -n "$mean_val" && -n "$sd_val" ]] && awk -v sd="$sd_val" 'BEGIN{exit !(sd+0>0)}'; then
+      zscore=$(awk -v r=0 -v mu="$mean_val" -v sd="$sd_val" 'BEGIN{printf("%.10g", (r-mu)/sd)}')
+    else
+      err="std_row_missing"
+      if [[ -z "$STANDARDIZATION_TSV" || ! -s "$STANDARDIZATION_TSV" ]]; then err="no_standardization_table"; fi
+    fi
+    {
+      printf "pgs_id\tsubpop\tiid\traw_score\tzscore\tmean\tsd\tmatched_variant_count\tweights_path\ttrait\terror\n"
+      printf "%s\t%s\t%s\t0\t%s\t%s\t%s\t0\t%s\t%s\t%s\n" \
+        "$pgsid" "$SUBPOP" "$USER_ID" "${zscore:-}" "${mean_val:-}" "${sd_val:-}" \
+        "$weights_path" "${trait_val:-}" "${err:-}"
+    } > "${out_pref}.normalized.tsv"
     return 0
   fi
 
@@ -252,9 +308,98 @@ score_one(){
     --pfile "$work/user_stdids" \
     --score "$score_tsv" 1 2 3 header-read no-mean-imputation list-variants \
     --out "${RESULTS_DIR}/${pgsid}.${SUBPOP}"
+
+  # 2) Derive user-level normalized score (z-score) using standardization.tsv if available
+  #    Output one-row TSV: <pgs_id, subpop, iid, raw_score, zscore, mean, sd, matched_variant_count, weights_path, trait>
+  local sscore_path="${RESULTS_DIR}/${pgsid}.${SUBPOP}.sscore"
+  local svars_path="${RESULTS_DIR}/${pgsid}.${SUBPOP}.sscore.vars"
+  local norm_out="${RESULTS_DIR}/${pgsid}.${SUBPOP}.normalized.tsv"
+
+  # Count matched variants (exclude header)
+  local matched_variants=0
+  if [[ -s "$svars_path" ]]; then
+    matched_variants=$(awk 'NR>1{c++} END{print c+0}' "$svars_path" 2>/dev/null || echo 0)
+  fi
+
+  # Extract user's raw score from .sscore (prefer SCORE1_SUM, else SCORE1_AVG, else SCORE)
+  local raw_score=""
+  if [[ -s "$sscore_path" ]]; then
+    raw_score=$(awk -v uid="$USER_ID" '
+      BEGIN{FS=OFS="\t"}
+      NR==1{
+        for(i=1;i<=NF;i++){h[$i]=i}
+        sc=-1; if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; next
+      }
+      sc>0 && $2==uid { print $sc; exit }
+    ' "$sscore_path" 2>/dev/null || true)
+    # If empty, try whitespace-sep read
+    if [[ -z "$raw_score" ]]; then
+      raw_score=$(awk -v uid="$USER_ID" '
+        NR==1{for(i=1;i<=NF;i++){h[$i]=i}; sc=-1; if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; next}
+        sc>0 && $2==uid { print $sc; exit }
+      ' "$sscore_path" 2>/dev/null || true)
+    fi
+  fi
+
+  # Lookup mean/sd/trait from standardization table
+  local mean_val="" sd_val="" trait_val=""
+  if [[ -n "$STANDARDIZATION_TSV" && -s "$STANDARDIZATION_TSV" ]]; then
+    # Capture into a single line to avoid set -e failures on empty reads
+    local _std_line
+    _std_line=$(awk -v pgs="$pgsid" -v sp="$SUBPOP" 'BEGIN{FS="\t"; OFS="\t"}
+      NR==1{
+        for(i=1;i<=NF;i++){k=$i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", k); k=tolower(k); m[k]=i}
+        c_pgs=(m["pgs_id"]?m["pgs_id"]:(m["pgs"]?m["pgs"]:0));
+        c_sp=(m["subpop"]?m["subpop"]:(m["population"]?m["population"]:0));
+        c_mean=(m["mean"]?m["mean"]:0);
+        c_sd=(m["sd"]?m["sd"]:0);
+        c_trait=(m["trait"]?m["trait"]:0);
+        next
+      }
+      c_pgs && c_sp && c_mean && c_sd {
+        if($c_pgs==pgs && toupper($c_sp)==sp){
+          printf("%s\t%s\t%s\n", $c_mean, $c_sd, (c_trait?$c_trait:"") );
+          exit
+        }
+      }
+    ' "$STANDARDIZATION_TSV" 2>/dev/null || true)
+    mean_val=$(printf '%s' "$_std_line" | cut -f1)
+    sd_val=$(printf '%s' "$_std_line" | cut -f2)
+    trait_val=$(printf '%s' "$_std_line" | cut -f3)
+  fi
+
+  # Compute z-score if possible
+  local zscore=""; local err=""
+  if [[ -n "$raw_score" && -n "$mean_val" && -n "$sd_val" ]]; then
+    # Validate numeric sd
+    if awk -v sd="$sd_val" 'BEGIN{exit !(sd+0>0)}'; then
+      zscore=$(awk -v r="$raw_score" -v mu="$mean_val" -v sd="$sd_val" 'BEGIN{printf("%.10g", (r-mu)/sd)}')
+    else
+      err="non_positive_sd"
+    fi
+  else
+    if [[ -z "$STANDARDIZATION_TSV" || ! -s "$STANDARDIZATION_TSV" ]]; then
+      err="no_standardization_table"
+    elif [[ -z "$raw_score" ]]; then
+      err="no_user_score"
+    else
+      err="std_row_missing"
+    fi
+  fi
+
+  {
+    printf "pgs_id\tsubpop\tiid\traw_score\tzscore\tmean\tsd\tmatched_variant_count\tweights_path\ttrait\terror\n"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n" \
+      "$pgsid" "$SUBPOP" "$USER_ID" "${raw_score:-}" "${zscore:-}" "${mean_val:-}" "${sd_val:-}" \
+      "$matched_variants" "$weights_path" "${trait_val:-}" "${err:-}"
+  } > "$norm_out"
 }
 
+idx=0
+total=${#WEIGHT_FILES[@]}
 for wf in "${WEIGHT_FILES[@]}"; do
+  idx=$((idx+1))
+  echo "[INFO] (${idx}/${total}) Processing weights: ${wf}" >&2
   if [[ ! -f "$wf" ]]; then
     echo "[WARN] Missing weights path: $wf" >&2
     continue

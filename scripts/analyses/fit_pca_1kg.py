@@ -303,16 +303,6 @@ def load_genotype_matrix(vcfs: List[VCF], panel: PanelIndex, label_samples: List
     X = np.full((len(label_samples), M), np.nan, dtype=np.float32)
     filled = np.zeros(M, dtype=bool)
 
-    for ch in AUTOSOMES:
-        ch_key = with_chr_prefix(ch)
-        if ch_key not in panel.by_chr_pos_to_j:
-            continue
-        v = open_vcf_for_chr(vcfs[0].filename.replace(".chr1.", ".chr{chr}."), ch)
-        v = None
-        for vv in vcfs:
-            pass
-        break
-
     for v in vcfs:
         for var in v:
             chrom = with_chr_prefix(var.CHROM)
@@ -432,24 +422,6 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     allowed = {"AFR","AMR","EAS","EUR","SAS"}
     df_lab = df_lab[df_lab.super_pop.isin(allowed)].copy()
 
-    vcfs: List[VCF] = []
-    for ch in AUTOSOMES:
-        v = open_vcf_for_chr(vcf_pattern_to_use, ch)
-        if v is None:
-            v = open_vcf_for_chr(vcf_pattern_to_use, with_chr_prefix(ch))
-        if v is None:
-            log.warning("Missing VCF for chr%s; continuing", ch)
-            continue
-        vcfs.append(v)
-    if not vcfs:
-        raise RuntimeError("No VCF/BCF files could be opened for autosomes 1..22.")
-
-    v0_samples = set(vcfs[0].samples)
-    df_lab = df_lab[df_lab.sample.isin(v0_samples)].copy()
-    if df_lab.empty:
-        raise RuntimeError("No overlap between labeled samples and VCF samples.")
-    df_lab.sort_values("sample", inplace=True)
-
     df_sites = pd.read_csv(args.sites, sep=None, engine="python", dtype=str)
     cols = {c.lower(): c for c in df_sites.columns}
     def need(*names):
@@ -461,7 +433,8 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     df_sites = df_sites[[c_ch,c_pos,c_ref,c_alt]].rename(columns={c_ch:"chr",c_pos:"pos",c_ref:"ref",c_alt:"alt"})
 
     panel = build_panel_index(df_sites)
-    
+
+    # Determine VCF pattern to use (optionally prefiltered to panel sites)
     vcf_pattern_to_use = args.vcf_pattern
     if args.prefilter_with_bcftools:
         tmp_dir = args.tmp_dir or os.path.join(args.out, "tmp_prefilt")
@@ -484,6 +457,26 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
             exclude_regions.append(Region(ch, s, e))
     if args.exclude_bed:
         exclude_regions.extend(load_bed(args.exclude_bed))
+
+    # Open per-chromosome VCF/BCF files AFTER deciding pattern
+    vcfs: List[VCF] = []
+    for ch in AUTOSOMES:
+        v = open_vcf_for_chr(vcf_pattern_to_use, ch)
+        if v is None:
+            v = open_vcf_for_chr(vcf_pattern_to_use, with_chr_prefix(ch))
+        if v is None:
+            log.warning("Missing VCF for chr%s; continuing", ch)
+            continue
+        vcfs.append(v)
+    if not vcfs:
+        raise RuntimeError("No VCF/BCF files could be opened for autosomes 1..22.")
+
+    # Keep only labeled samples that are present in the VCFs
+    v0_samples = set(vcfs[0].samples)
+    df_lab = df_lab[df_lab.sample.isin(v0_samples)].copy()
+    if df_lab.empty:
+        raise RuntimeError("No overlap between labeled samples and VCF samples.")
+    df_lab.sort_values("sample", inplace=True)
 
     X, sites_used, filled_mask = load_genotype_matrix(
         vcfs=vcfs,
@@ -678,10 +671,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Reference PCA, projection, and Mahalanobis-based ancestry assignment",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("command", choices=["fit-ref", "project", "assign"], help="Subcommand to run")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG","INFO","WARNING","ERROR"], help="Logging level")
 
-    sub = p.add_subparsers(dest="sub")
+    sub = p.add_subparsers(dest="command", required=True)
 
     q = sub.add_parser("fit-ref", help="Fit reference PCA model")
     q.add_argument("--vcf-pattern", required=True, help="Path with {chr} placeholder, e.g. /data/ALL.chr{chr}.vcf.gz")
@@ -742,7 +734,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     elif args.command == "project":
         cmd_project(args)
     elif args.command == "assign":
-        cmd_assign(args)
+        parser.error("The 'assign' subcommand is disabled in this project. Use scripts/analyses/assign_ancestry.py instead.")
     else:
         parser.error("Unknown command")
 
