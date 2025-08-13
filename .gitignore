@@ -15,6 +15,4 @@ pgs/
 input_data/
 plink2
 vcf_subset
-pca_model/labels.AFR.keep
-pca_model/labels.AMR.keep
-pca_model/labels.EAS.keep
+
