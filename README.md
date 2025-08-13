@@ -76,7 +76,7 @@ bash scripts/run_user.sh <path/to/23andMe/file>.txt
   2. Filename: {STEM}\_initial_qc.txt where {STEM} is your input filename without .txt/.gz.
 
 - Run imputation on the user's genome, and generate a directory called `/users/{STEM}` inside where all subsequent results will be written for the user
-- Imputated genome: `/users/{STEM}/{STEM}_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
+- Imputed genome: `/users/{STEM}/{STEM}_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
 - Imputation quality control files: in `/users/{STEM}/imputation_qc_reports`
 - User's plink2 files: in `/users/{STEM}/pfiles`
 - At this stage, the user's imputed genome has been filtered to keep only variants with high imputation quality (i.e. DR2/INFO >=0.8). Important for PGS scoring.
