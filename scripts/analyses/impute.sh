@@ -486,24 +486,8 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bref3"
-  # Beagle PLINK maps are named plink.chr${CHR}.GRCh38.map (note the dot)
-  # Add a robust fallback in case of naming variations
-  MAP=""
-  MAP_CAND1="${MAP_DIR_BEAGLE}/plink.chr${CHR}.GRCh38.map"
-  MAP_CAND2="${MAP_DIR_BEAGLE}/plink.chr${CHR}GRCh38.map"
-  if [[ -f "$MAP_CAND1" ]]; then
-    MAP="$MAP_CAND1"
-  elif [[ -f "$MAP_CAND2" ]]; then
-    MAP="$MAP_CAND2"
-  else
-    # Try to auto-detect any matching map for this chromosome
-    shopt -s nullglob
-    set -- "${MAP_DIR_BEAGLE}"/*"chr${CHR}"*.map
-    if [[ $# -ge 1 && -f "$1" ]]; then
-      MAP="$1"
-    fi
-    shopt -u nullglob
-  fi
+  # Beagle PLINK maps use the canonical name below
+  MAP="${MAP_DIR_BEAGLE}/plink.chr${CHR}.GRCh38.map"
   TEMP_MAP=$(mktemp) 
 
   trap 'rm -f "$TEMP_MAP"' EXIT HUP INT QUIT TERM
