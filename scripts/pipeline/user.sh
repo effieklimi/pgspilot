@@ -76,10 +76,8 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
     -v "$ABS_INPUT_DIR:/app/input_data" \
     -v "${PROJECT_ROOT}/genome_data:/app/genome_data" \
     -v "${PROJECT_ROOT}/pca_model:/app/pca_model" \
-    -v "${PROJECT_ROOT}/traits:/app/traits" \
     -v "${PROJECT_ROOT}/pgs:/app/pgs" \
     -v "${PROJECT_ROOT}/users:/app/users" \
-    -v "${PROJECT_ROOT}/calibration:/app/calibration" \
     -v "${PROJECT_ROOT}/scripts:/app/scripts:ro" \
     "$DOCKER_IMAGE" \
     "${CMD_TO_RUN[@]}"
@@ -140,31 +138,22 @@ else
     echo "==> [CONTAINER] Found existing FINAL_VCF: $FINAL_VCF (skipping imputation)"
     # ensure it's indexed
     [[ -f "${FINAL_VCF}.tbi" ]] || tabix -f -p vcf "$FINAL_VCF" || true
-  # Replace your imputation block with this
   else
     echo "==> [CONTAINER] Running imputation…"
 
-    # Run the flaky step without aborting the whole script, but record the status.
     set +e
-    OUT_DIR="$USER_DIR" "$IMPUTE_SH" "$INPUT"
+    OUT_DIR="$USER_DIR" QUIET=1 "$IMPUTE_SH" "$INPUT"
     imp_status=$?
     set -e
 
-    # Cleanup should always run, success or failure.
     cleanup_imputation_tmp || true
 
-    # Validate success by artifacts, not by exit code.
     [[ -s "$FINAL_VCF" ]] || die "Imputation exited $imp_status and produced no $FINAL_VCF"
 
-    # Basic integrity checks
     tabix -f -p vcf "$FINAL_VCF" || die "Failed to index $FINAL_VCF"
     nvar=$( (zgrep -vc '^#' "$FINAL_VCF" || echo 0) )
     (( nvar > 0 )) || die "Imputed VCF has zero variants"
 
-    # Optional: only treat certain non-zero codes as warnings
-    if [[ "$imp_status" -ne 0 ]]; then
-      log "⚠ Imputation returned $imp_status, but outputs validated (variants: $nvar); continuing."
-    fi
   fi
 
 
@@ -242,16 +231,16 @@ else
   SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
   bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
 
-  # 5) Collect + standardize → JSON
-  STD_TABLE="/app/pgs/weights/harmonized/standardization.tsv"
-  OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
-  python /app/scripts/analyses/collect_scores.py \
-    --results-dir "$SCORES_DIR" \
-    --standardization "$STD_TABLE" \
-    --user-iid "$STEM" \
-    --subpop "$SUBPOP" \
-    --out-json "$OUT_JSON"
+  # # 5) Collect + standardize → JSON
+  # STD_TABLE="/app/pgs/weights/harmonized/standardization.tsv"
+  # OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
+  # python /app/scripts/analyses/collect_scores.py \
+  #   --results-dir "$SCORES_DIR" \
+  #   --standardization "$STD_TABLE" \
+  #   --user-iid "$STEM" \
+  #   --subpop "$SUBPOP" \
+  #   --out-json "$OUT_JSON"
 
-  echo "✓ Done. Results: $OUT_JSON"
+  # echo "✓ Done. Results: $OUT_JSON"
 
 fi

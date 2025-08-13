@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# /app/scripts/analyses/call_ancestry.py
 import argparse, os, sys, tempfile, shutil, subprocess
 import numpy as np
 import pandas as pd
@@ -15,19 +14,15 @@ def run(cmd):
 
 def detect_score_col(df):
     cols = list(map(str, df.columns))
-    # Prefer *_SUM, but ignore dosage sum
     sum_cols = [c for c in cols if c.endswith("_SUM") and c != "NAMED_ALLELE_DOSAGE_SUM"]
     if sum_cols:
         return sum_cols[0]
-    # Then *_AVG
     avg_cols = [c for c in cols if c.endswith("_AVG")]
     if avg_cols:
         return avg_cols[0]
-    # Legacy fallbacks
     for c in ("SCORE1_SUM","SCORE1_AVG","SCORE","SCORE1","BETA_SUM","BETA_AVG"):
         if c in cols:
             return c
-    # Last resort: anything starting with SCORE or BETA
     for c in cols:
         if c.startswith(("SCORE","BETA")):
             return c
@@ -44,7 +39,6 @@ def main():
     ap.add_argument("--reject-quantile", type=float, default=0.99)
     args = ap.parse_args()
 
-    # Load PCA artifacts (trained by your fit_pca_1kg.py)
     sites = pd.read_csv(os.path.join(PCA_DIR, "pca_sites.b38.tsv"), sep="\t", dtype=str).rename(columns=str.lower)
     for c in ("chr","pos","ref","alt"):
         if c not in sites.columns:
@@ -61,11 +55,9 @@ def main():
     if len(means)!=M or len(stds)!=M:
         raise SystemExit("[ERROR] means/stds length mismatch with loadings")
 
-    # Build scoring betas and intercepts so PLINK2 can do the dot products on raw dosages
     betas = L[:, :K] / stds[:, None]                      # M x K
     intercept = -(betas * means[:, None]).sum(axis=0)     # length K
 
-    # Standardize IDs on the user set (chr:pos:ref:alt)
     work = tempfile.mkdtemp(prefix="ancestry_")
     try:
         std_prefix = os.path.join(work, "user_stdids")
@@ -81,7 +73,6 @@ def main():
         pcs_vals = np.zeros(K, dtype=float)
         iid = None
 
-        # Precompute an index for ids -> row
         id_to_idx = {vid: i for i, vid in enumerate(ids)}
         used_count = None  # filled after first PC
 
@@ -111,28 +102,23 @@ def main():
                 used_count = len(idx)
                 used_frac = used_count / float(M)
 
-            # Subset-aware intercept on the same idx
             score_sum = float(ssc[detect_score_col(ssc)].iloc[0])
             pcs_vals[k] = score_sum - float((betas[idx, k] * means[idx]).sum())
 
 
-        # Save user PCs
         with open(args.out_pcs, "w") as g:
             g.write("sample_id" + "".join([f"\tPC{i+1}" for i in range(K)]) + "\n")
             g.write(iid + "".join([f"\t{pcs_vals[i]:.10g}" for i in range(K)]) + "\n")
 
-        # Ancestry assignment (nearest centroid; reject at quantile)
         ref_use = ref[["subpop"] + [f"pc{i+1}" for i in range(K)]].copy()
         centroids = ref_use.groupby("subpop").mean()
 
-        # rejection thresholds per subpop
         thr = {}
         for sp, grp in ref_use.groupby("subpop"):
             c = centroids.loc[sp].values
             d = np.linalg.norm(grp.iloc[:, 1:].values - c, axis=1)
             thr[sp] = np.quantile(d, args.reject_quantile)
 
-        # assign
         x = pcs_vals
         dists = np.linalg.norm(centroids.values - x, axis=1)
         idx = dists.argmin()

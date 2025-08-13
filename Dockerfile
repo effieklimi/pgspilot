@@ -107,8 +107,8 @@ RUN chmod +x /app/scripts/pipeline/user.sh \
            /app/scripts/pipeline/setup.sh \
            /app/scripts/helpers/pruned_panel.sh \
            /app/scripts/pipeline/qc_genome.sh \
-           /app/scripts/pipeline/download_data.sh \
-           /app/scripts/pipeline/build_refs.sh \
+           /app/scripts/helpers/download_data.sh \
+           /app/scripts/helpers/build_refs.sh \
            /app/scripts/helpers/vcf_to_pfile.sh \
            /app/scripts/helpers/per_ancestry_maf.sh \
            /app/scripts/analyses/impute.sh

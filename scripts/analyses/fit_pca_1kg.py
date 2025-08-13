@@ -104,10 +104,7 @@ LONG_RANGE_REGIONS_HG38 = [
     ("chr17", 40_000_000, 46_000_000),  # 17q21.31 (MAPT) inversion
 ]
 
-# -------------------------------------------------------------
 # I/O utils
-# -------------------------------------------------------------
-
 def with_chr_prefix(ch: str) -> str:
     ch = str(ch).strip()
     return ch if ch.startswith("chr") else "chr" + ch
@@ -130,7 +127,6 @@ def is_biallelic_snp(ref: str, alt: Sequence[str]) -> bool:
         len(ref) == 1 and len(a) == 1 and
         ref in VALID_A and a in VALID_A and ref != a
     )
-
 
 @dataclass
 class Region:
@@ -176,7 +172,6 @@ def prefilter_with_bcftools(vcf_pattern: str, sites_df: pd.DataFrame, out_dir: s
     os.makedirs(out_dir, exist_ok=True)
     bed_path = os.path.join(out_dir, "panel.bed")
 
-    # Write 0-based half-open BED from sites_df
     with open(bed_path, "w") as bed:
         for ch, pos in sites_df[["chr", "pos"]].itertuples(index=False):
             chp = with_chr_prefix(ch)
@@ -198,10 +193,7 @@ def prefilter_with_bcftools(vcf_pattern: str, sites_df: pd.DataFrame, out_dir: s
     return os.path.join(out_dir, "subset.chr{chr}.vcf.gz")
 
 
-# -------------------------------------------------------------
 # VCF reading constrained to a panel of sites
-# -------------------------------------------------------------
-
 def open_vcf_for_chr(pattern: str, ch: str) -> Optional[VCF]:
     path = pattern.replace("{chr}", ch)
     if os.path.exists(path):
@@ -221,7 +213,6 @@ def ensure_sample_order_same(vcfs: List[VCF]) -> List[str]:
 
 @dataclass
 class PanelIndex:
-    # Mapping structures to quickly map chr:pos -> column index and expected alleles
     by_chr_pos_to_j: Dict[str, Dict[int, int]]
     by_chr_pos_alleles: Dict[str, Dict[int, Tuple[str, str]]]
     order: pd.DataFrame  # columns: chr,pos,ref,alt in the exact used order
@@ -234,14 +225,12 @@ def build_panel_index(sites: pd.DataFrame) -> PanelIndex:
     s["ref"] = s["ref"].str.upper()
     s["alt"] = s["alt"].str.upper()
 
-    # Keep autosomes only; preserve row order
     autos = {with_chr_prefix(c) for c in AUTOSOMES}
     s = s[s["chr"].isin(autos)].drop_duplicates(subset=["chr","pos","ref","alt"])\
                                .reset_index(drop=True)
     if s.empty:
         raise RuntimeError("No autosomal PCA sites after filtering input panel.")
 
-    # Validate SNPs
     bad = ~s.apply(lambda r: is_biallelic_snp(r["ref"], [r["alt"]]), axis=1)
     if bad.any():
         example = s.loc[bad, ["chr","pos","ref","alt"]].head(5).to_dict(orient="records")
@@ -256,10 +245,7 @@ def build_panel_index(sites: pd.DataFrame) -> PanelIndex:
     return PanelIndex(by_chr_pos_to_j, by_chr_pos_alleles, s)
 
 
-# -------------------------------------------------------------
 # Genotype matrix builder
-# -------------------------------------------------------------
-
 def variant_is_excluded(chrom: str, pos: int, regions: List[Region]) -> bool:
     c = with_chr_prefix(chrom)
     for r in regions:
@@ -273,7 +259,6 @@ def try_match_alleles(ref_v: str, alt_v: str, want_ref: str, want_alt: str,
     """Return (swap, flipped) where swap∈{0,1} indicates REF/ALT swap, flipped indicates strand flip.
        None if not matchable under the allowed rules. Ambiguous A/T or C/G under strand flips are rejected.
     """
-    # Strict match
     if ref_v == want_ref and alt_v == want_alt:
         return (0, False)
 
@@ -292,7 +277,6 @@ def try_match_alleles(ref_v: str, alt_v: str, want_ref: str, want_alt: str,
         if ref_v in comp and alt_v in comp:
             candidates.append((comp[alt_v], comp[ref_v], 1, True))
 
-    # Disallow ambiguous strand flips for AT or CG pairs
     ambig_pairs = {("A","T"), ("T","A"), ("C","G"), ("G","C")}
 
     for r,a,swap,flip in candidates:
@@ -313,29 +297,22 @@ def load_genotype_matrix(vcfs: List[VCF], panel: PanelIndex, label_samples: List
     """
     log = logger or logging.getLogger(__name__)
     all_samples = ensure_sample_order_same(vcfs)
-    # Reindex to labeled order
     samp_index = np.array([all_samples.index(s) for s in label_samples], dtype=np.int64)
 
     M = panel.order.shape[0]
     X = np.full((len(label_samples), M), np.nan, dtype=np.float32)
     filled = np.zeros(M, dtype=bool)
 
-    # Pre-build quick lookup of positions per chromosome
     for ch in AUTOSOMES:
         ch_key = with_chr_prefix(ch)
         if ch_key not in panel.by_chr_pos_to_j:
             continue
         v = open_vcf_for_chr(vcfs[0].filename.replace(".chr1.", ".chr{chr}."), ch)
-        # The above trick may fail with arbitrary patterns; instead find the matching VCF handle already opened.
         v = None
         for vv in vcfs:
-            # cyvcf2 has .seqnames? We'll use samples list equality to detect; instead reopen via pattern is safer.
             pass
-        # We'll simply reopen from pattern in caller; since we get vcfs list, just iterate that list.
         break
 
-    # Iterate through provided VCF handles instead
-    # Because we may have a mix of chromosomes present, we simply process all variants and check membership
     for v in vcfs:
         for var in v:
             chrom = with_chr_prefix(var.CHROM)
@@ -396,10 +373,7 @@ def load_genotype_matrix(vcfs: List[VCF], panel: PanelIndex, label_samples: List
     return X, sites_used, filled
 
 
-# -------------------------------------------------------------
 # PCA + population params
-# -------------------------------------------------------------
-
 def zscore_with_reference(X: np.ndarray, means_2p: np.ndarray, stds: np.ndarray) -> np.ndarray:
     Y = X.copy()
     inds = np.where(np.isnan(Y))
@@ -444,14 +418,10 @@ def mahalanobis2(x: np.ndarray, mu: np.ndarray, inv_cov: np.ndarray) -> float:
     return float(d @ inv_cov @ d)
 
 
-# -------------------------------------------------------------
 # CLI subcommands
-# -------------------------------------------------------------
-
 def cmd_fit_ref(args: argparse.Namespace) -> None:
     log = logging.getLogger("fit-ref")
 
-    # Load labels
     df_lab = pd.read_csv(args.labels, sep=None, engine="python", dtype=str)
     df_lab.columns = [c.strip().lower() for c in df_lab.columns]
     sample_col = "sample" if "sample" in df_lab.columns else ("iid" if "iid" in df_lab.columns else None)
@@ -462,7 +432,6 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     allowed = {"AFR","AMR","EAS","EUR","SAS"}
     df_lab = df_lab[df_lab.super_pop.isin(allowed)].copy()
 
-    # Open VCFs
     vcfs: List[VCF] = []
     for ch in AUTOSOMES:
         v = open_vcf_for_chr(vcf_pattern_to_use, ch)
@@ -475,14 +444,12 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     if not vcfs:
         raise RuntimeError("No VCF/BCF files could be opened for autosomes 1..22.")
 
-    # Intersect labels with first VCF sample set (assume same across)
     v0_samples = set(vcfs[0].samples)
     df_lab = df_lab[df_lab.sample.isin(v0_samples)].copy()
     if df_lab.empty:
         raise RuntimeError("No overlap between labeled samples and VCF samples.")
     df_lab.sort_values("sample", inplace=True)
 
-    # Load panel sites
     df_sites = pd.read_csv(args.sites, sep=None, engine="python", dtype=str)
     cols = {c.lower(): c for c in df_sites.columns}
     def need(*names):
@@ -493,10 +460,8 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
         raise RuntimeError("--sites must have columns chr,pos,ref,alt (common synonyms ok)")
     df_sites = df_sites[[c_ch,c_pos,c_ref,c_alt]].rename(columns={c_ch:"chr",c_pos:"pos",c_ref:"ref",c_alt:"alt"})
 
-    # Build panel index
     panel = build_panel_index(df_sites)
     
-    # Optional: prefilter with bcftools to accelerate reading
     vcf_pattern_to_use = args.vcf_pattern
     if args.prefilter_with_bcftools:
         tmp_dir = args.tmp_dir or os.path.join(args.out, "tmp_prefilt")
@@ -511,7 +476,6 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
         log.info("Using prefiltered VCFs: %s", vcf_pattern_to_use)
 
 
-    # Regions to exclude
     exclude_regions: List[Region] = []
     if args.exclude_mhc:
         exclude_regions.append(Region(*HG38_MHC))
@@ -521,7 +485,6 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     if args.exclude_bed:
         exclude_regions.extend(load_bed(args.exclude_bed))
 
-    # Build genotype matrix
     X, sites_used, filled_mask = load_genotype_matrix(
         vcfs=vcfs,
         panel=panel,
@@ -537,7 +500,6 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     if X.shape[1] == 0:
         raise RuntimeError("No panel sites available after filtering/matching.")
 
-    # Compute per-site stats and drop near-constant
     means_2p, stds, keep = compute_ref_stats(X)
     if keep.sum() < X.shape[1]:
         log.warning("Dropping %d monomorphic/near-constant sites before PCA", int(X.shape[1]-keep.sum()))
@@ -546,14 +508,11 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
         stds = stds[keep]
         sites_used = sites_used.loc[keep].reset_index(drop=True)
 
-    # Z-score with reference means/stds
     X_std = zscore_with_reference(X, means_2p, stds)
 
-    # Fit PCA
     k = int(args.pcs)
     pca, scores, loadings = fit_reference_pca(X_std, k=k, random_state=args.random_seed)
 
-    # Save outputs
     os.makedirs(args.out, exist_ok=True)
     sites_path = os.path.join(args.out, "pca_sites.b38.tsv")
     sites_used.to_csv(sites_path, sep="\t", index=False)
@@ -570,16 +529,13 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     ref_scores.insert(0, "sample", df_lab.sample.values)
     ref_scores.to_csv(os.path.join(args.out, "ref_scores.csv"), index=False)
 
-    # Population params in PC space
     centroids, inv_covs, pops = pop_params_from_scores(ref_scores, pc_cols)
-    # Pack into npz
     np.savez(os.path.join(args.out, "pop_params.npz"),
              pops=np.array(pops, dtype=object),
              centroids=np.array([centroids[p] for p in pops], dtype=object),
              inv_covs=np.array([inv_covs[p] for p in pops], dtype=object),
              k=np.array(k))
 
-    # Meta
     meta = {
         "n_samples": int(ref_scores.shape[0]),
         "n_sites": int(sites_used.shape[0]),
@@ -604,15 +560,12 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
 def cmd_project(args: argparse.Namespace) -> None:
     log = logging.getLogger("project")
 
-    # Load model artifacts
     means_2p = np.load(os.path.join(args.model, "ref_means.npy"))
     stds = np.load(os.path.join(args.model, "ref_stds.npy"))
     loadings = np.load(os.path.join(args.model, "loadings.npy"))
 
-    # Load sites in exact order
     df_sites = pd.read_csv(os.path.join(args.model, "pca_sites.b38.tsv"), sep="\t", dtype=str)
 
-    # Open VCFs
     vcfs: List[VCF] = []
     for ch in AUTOSOMES:
         v = open_vcf_for_chr(args.vcf_pattern, ch)
@@ -635,7 +588,6 @@ def cmd_project(args: argparse.Namespace) -> None:
     else:
         label_samples = samples_all
 
-    # Build panel index from model sites
     panel = build_panel_index(df_sites)
 
     # Build genotype matrix for these samples (no extra region exclusion; model already did)
@@ -654,7 +606,6 @@ def cmd_project(args: argparse.Namespace) -> None:
     if X.shape[1] != loadings.shape[0]:
         raise RuntimeError("Projected sites count mismatch with model loadings; ensure same panel.")
 
-    # Z-score with reference means/stds and project
     X_std = zscore_with_reference(X, means_2p, stds)
     scores = X_std @ loadings
 
@@ -672,7 +623,6 @@ def cmd_assign(args: argparse.Namespace) -> None:
     log = logging.getLogger("assign")
 
     df_scores = pd.read_csv(args.scores)
-    # Load pop params
     d = np.load(args.pop_params, allow_pickle=True)
     pops = list(d["pops"].tolist())
     centroids = list(d["centroids"].tolist())
@@ -685,11 +635,9 @@ def cmd_assign(args: argparse.Namespace) -> None:
         if c not in df_scores.columns:
             raise RuntimeError(f"Scores missing column {c}")
 
-    # Chi-square thresholds
     thr95 = chi2.ppf(args.p95, df=K_use)
     thr99 = chi2.ppf(args.p99, df=K_use)
 
-    # Build maps
     pop_to_mu = {p: np.asarray(mu)[:K_use] for p, mu in zip(pops, centroids)}
     pop_to_inv = {p: np.asarray(ic)[:K_use, :K_use] for p, ic in zip(pops, inv_covs)}
 
@@ -724,10 +672,7 @@ def cmd_assign(args: argparse.Namespace) -> None:
     log.info("[✓] Wrote assignments: %s", args.out)
 
 
-# -------------------------------------------------------------
 # Argument parsing
-# -------------------------------------------------------------
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Reference PCA, projection, and Mahalanobis-based ancestry assignment",
@@ -738,7 +683,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="sub")
 
-    # fit-ref
     q = sub.add_parser("fit-ref", help="Fit reference PCA model")
     q.add_argument("--vcf-pattern", required=True, help="Path with {chr} placeholder, e.g. /data/ALL.chr{chr}.vcf.gz")
     q.add_argument("--labels", required=True, help="TSV/CSV with columns: sample, super_pop")
@@ -761,15 +705,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--tabix", default="tabix", help="Path to tabix executable")
     q.add_argument("--tmp-dir", default=None, help="Temporary directory for prefiltered VCFs")
 
-
-    # project
     r = sub.add_parser("project", help="Project samples onto reference PCs")
     r.add_argument("--vcf-pattern", required=True, help="Path with {chr} placeholder for query VCFs")
     r.add_argument("--model", required=True, help="Reference PCA model directory from fit-ref")
     r.add_argument("--out", required=True, help="Output directory for scores")
     r.add_argument("--samples-keep", default=None, help="Optional list of sample IDs to project (one per line)")
 
-    # assign
     s = sub.add_parser("assign", help="Assign ancestry by Mahalanobis on PCs")
     s.add_argument("--scores", required=True, help="CSV with columns sample,PC1..PCK")
     s.add_argument("--pop-params", required=True, help="pop_params.npz from fit-ref")
@@ -788,8 +729,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         parser.print_help(sys.stderr)
         sys.exit(2)
 
-    # Extract global log-level early
-    # (argparse isn't great with subparsers + shared opts; so parse partially)
     log_level = "INFO"
     for i, tok in enumerate(argv):
         if tok == "--log-level" and i+1 < len(argv):

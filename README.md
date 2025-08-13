@@ -58,12 +58,13 @@ bash run_user.sh <path/to/23andMe/file>.txt
 
 In the current pilot implementation, the PCA was run with 6 principal components for speed. The analyses will run using those PCA results, but the scores obtained with it will not be optimal. Six PCs is not enough here.
 
-Steps that need to be taken:
+Things to keep in mind and steps that need to be taken:
 
 - Make sure that the analyses work on your local machine with the files generated using 6 prinicipal components
 - Then, delete everything inside the `pca_model` folder
-- Re-run the setup script with `bash run_setup.sh`. This should re-run the PCA
+- Re-run the setup script with `bash scripts/run_setup.sh`. This should re-run the PCA
 - This might take some time to run
 - I have already configured the `scripts/pipeline/setup.sh` script (the "setup" pipeline orchestrator) to run with 12 principal components next time by configuring the flag: `--pcs 12`
+- PGS IDs will need to be re-run after the PCA is re-run. Delete all old PGS-related directories in `/pgs/weights`, and re-run the `bash scripts/run_add_pgs.sh <PGS_ID>`
 
 The new PCA will need to be inspected after it finishes running. Let me know at this stage, I will inspect it for you. If any changes would be needed, they would most likely be using 10 principal components instead of 12.

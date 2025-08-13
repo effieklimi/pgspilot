@@ -48,10 +48,10 @@ fi
 
 # 0. Ensure required genome_data downloads and local reference builds
 echo "==> [CONTAINER] Ensuring required genome_data downloads..."
-bash "/app/scripts/pipeline/download_data.sh" || exit 1
+bash "/app/scripts/helpers/download_data.sh" || exit 1
 
 echo "==> [CONTAINER] Ensuring reference builds (BCF/CSI and bref3)..."
-bash "/app/scripts/pipeline/build_refs.sh" || exit 1
+bash "/app/scripts/helpers/build_refs.sh" || exit 1
 
 # 0.5 Generate/ensure ALT alleles lookup database
 ALT_DB="/app/genome_data/alt_alleles.db"

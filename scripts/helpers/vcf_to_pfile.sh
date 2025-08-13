@@ -1,30 +1,8 @@
 #!/usr/bin/env bash
-# Convert an (imputed) VCF.gz to a PLINK2 PFILE trio (.pgen/.pvar/.psam),
-# with optional filtering to well-imputed, biallelic SNPs.
-#
-# Usage:
-#   vcf_to_pfile.sh \
-#     --vcf FILE.vcf.gz \
-#     --out-prefix /path/to/user \
-#     [--info-key DR2|R2|AR2|RSQ|Rsq|INFO|IMPINFO] \
-#     [--info-min 0.8] \
-#     [--threads 4] \
-#     [--extract-snps panel.ids] \
-#     [--keep-unfiltered] \
-#     [--no-cleanup]
-#
-# Notes:
-#   - No MAF/AF filtering here. If you want a rarity floor, do it downstream
-#     on the merged/reference set (e.g., plink2 --mac/--maf).
-#
-# Produces:
-#   <out-prefix>.pgen/.pvar/.psam
-#   <out-prefix>.qc.json
-#   <out-prefix>.status.json  (ok/degraded/failed)
-#   Optionally: <out-prefix>.subset.* if --extract-snps is used
-#
+# Convert an imputed VCF.gz to a PLINK2 PFILE trio (.pgen/.pvar/.psam),
+
 set -euo pipefail
-set -E  # ensure ERR trap fires in functions
+set -E 
 
 # -------- defaults --------
 INFO_KEY=""
@@ -51,6 +29,21 @@ hash_file() {
     shasum -a 256 "$f" | awk '{print $1}'
   else
     echo "NA"
+  fi
+}
+
+# Ensure VCF header declares INFO/END to avoid htslib warnings
+add_end_header_if_missing() {
+  local vcf="$1"
+  [[ -f "$vcf" ]] || return 0
+  if ! bcftools view -h "$vcf" | grep -q 'ID=END,'; then
+    local tmp
+    tmp="${vcf%.vcf.gz}.withEND.vcf.gz"
+    HTS_LOG_LEVEL=ERROR bcftools annotate \
+      -h <(printf '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant">\n') \
+      -Oz -o "$tmp" "$vcf"
+    tabix -f -p vcf "$tmp" || true
+    mv "$tmp" "$vcf" && mv "${tmp}.tbi" "${vcf}.tbi"
   fi
 }
 
@@ -129,6 +122,9 @@ trap cleanup EXIT
 STAGE="index"
 [[ -f "${VCF}.tbi" ]] || tabix -f -p vcf "$VCF" || true
 
+# Add END header if missing before any bcftools/plink2 reads
+add_end_header_if_missing "$VCF"
+
 log "Preparing PLINK2 PFILE from imputed VCF…"
 echo "   - Input VCF: $VCF"
 echo "   - Output prefix: $OUT_PREFIX"
@@ -192,9 +188,24 @@ else
   log "Skipping filtering (--keep-unfiltered)"
 fi
 
+# Ensure END header present on the exact file fed to plink2
+add_end_header_if_missing "$VCF_FOR_PLINK"
+
+# Double-check; in rare cases on some filesystems a rename may race with readers.
+# If still missing, force-annotate to a new file and use that for plink2.
+if ! bcftools view -h "$VCF_FOR_PLINK" | grep -q 'ID=END,'; then
+  warn "'END' header still missing; forcing header injection for plink2 input."
+  FOR_PLINK="${WORKDIR}/for_plink.vcf.gz"
+  HTS_LOG_LEVEL=ERROR bcftools annotate \
+    -h <(printf '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant">\n') \
+    -Oz -o "$FOR_PLINK" "$VCF_FOR_PLINK"
+  tabix -f -p vcf "$FOR_PLINK" || true
+  VCF_FOR_PLINK="$FOR_PLINK"
+fi
+
 # ------------- convert to PFILE -------------
 STAGE="convert"
-plink2 \
+HTS_LOG_LEVEL=ERROR plink2 \
   --threads "$THREADS" \
   --vcf "$VCF_FOR_PLINK" dosage="$DOSAGE_FIELD" \
   --double-id \

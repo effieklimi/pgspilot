@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# scripts/pipeline/download_data.sh
-# Purpose: Download and stage network-fetched genome_data artifacts only.
-# NOTE: Local reference builds (BCF/bref3) have moved to build_refs.sh.
-
-# -----------------------------------------------------------------------------
-# Host vs container switch (mirror user.sh/add_pgs.sh behavior)
-# -----------------------------------------------------------------------------
 if [ -z "${INSIDE_DOCKER:-}" ]; then
-  # Resolve repo root and re-invoke inside Docker with the repo mounted at /app
   THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
   PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
   DOCKER_IMAGE="${DOCKER_IMAGE:-pgspilot}"
@@ -18,13 +10,10 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
     "$DOCKER_IMAGE" \
-    /app/scripts/pipeline/download_data.sh "$@"
+    /app/scripts/helpers/download_data.sh "$@"
   exit 0
 fi
 
-# -----------------------------------------------------------------------------
-# Container worker
-# -----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/config.sh"
@@ -39,7 +28,6 @@ ensure_dir(){
   mkdir -p "$dir"
 }
 
-# Supported subfolders detected in current tree
 SUPPORTED=(
   "1000G"
   "beagle_maps_b38"
@@ -60,7 +48,6 @@ contains() {
   return 1
 }
 
-# Download logic for 1000G (chromosomes 1..22)
 setup_1000G(){
   local dir="${GENOME_DIR}/1000G"; ensure_dir "$dir"
   local base_url="https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000G_2504_high_coverage/working/20220422_3202_phased_SNV_INDEL_SV"
@@ -68,7 +55,6 @@ setup_1000G(){
 
   log "==> [1000G] Downloading chr1..22 VCFs into $dir (parallel: $threads)"
 
-  # Fetch remote Content-Length for a URL (best-effort)
   get_remote_size(){
     local url="$1"
     # wget --spider emits headers on stderr; parse Length or Content-Length
@@ -80,7 +66,6 @@ setup_1000G(){
 
   validate_header(){
     local file="$1"
-    # Ensure compressed and contains VCF header lines near start
     if zgrep -a -m1 '^##fileformat=VCF' "$file" >/dev/null 2>&1; then
       return 0
     fi
@@ -103,11 +88,9 @@ setup_1000G(){
     local dest_tbi="${dir}/${name_tbi}"
     local tmp_tbi="${dest_tbi}.part"
 
-    # Determine remote size if possible
     local remote_size
     remote_size="$(get_remote_size "$url")"
 
-    # Ensure VCF exists and is complete; do not return early to allow TBI check
     local need_vcf_download=1
     if [[ -s "$dest" ]]; then
       local vcf_ok=0
@@ -124,7 +107,6 @@ setup_1000G(){
       if (( vcf_ok == 1 )); then
         log "[1000G chr${chr}] VCF exists and looks complete."
         need_vcf_download=0
-        # Clean up any leftover partial to avoid confusing resume logs next time
         [[ -f "$tmp" ]] && rm -f "$tmp" 2>/dev/null || true
       else
         log "[1000G chr${chr}] Existing VCF seems incomplete; will resume."
@@ -132,7 +114,6 @@ setup_1000G(){
       fi
     fi
 
-    # If tmp exists but final does not, resume into tmp
     if [[ -f "$tmp" && -n "$remote_size" ]]; then
       local part_size
       part_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
@@ -140,7 +121,6 @@ setup_1000G(){
     fi
 
     if (( need_vcf_download == 1 )); then
-      # Initialize per-VCF log and track progress by monitoring the tmp file size
       : > "$log_live"
       printf '[start] %s url=%s\n' "$(date -u +%FT%TZ)" "$url" >> "$log_live"
       if [[ -n "$remote_size" ]]; then printf '[remote] size=%s\n' "$remote_size" >> "$log_live"; fi
@@ -150,7 +130,6 @@ setup_1000G(){
         printf '[resume] %s part_size=%s\n' "$(date -u +%FT%TZ)" "$part_size0" >> "$log_live"
       fi
 
-      # Helper: run wget once with a progress monitor
       run_wget_with_progress(){
         : "${1:?missing url}" "${2:?missing tmp}" "${3:?missing log}"
         wget -c \
@@ -186,7 +165,6 @@ setup_1000G(){
         run_wget_with_progress "$url" "$tmp" "$log_live" || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[1000G chr${chr}] Download failed on retry."; }
       fi
 
-      # Verify completion (VCF)
       if [[ -n "$remote_size" ]]; then
         local final_size
         final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
@@ -208,12 +186,9 @@ setup_1000G(){
       fi
     fi
 
-    # --- Download matching TBI index ---
-    # Determine remote size for TBI if possible
     local remote_size_tbi
     remote_size_tbi="$(get_remote_size "$url_tbi")"
 
-    # Skip/resume logic for TBI
     if [[ -s "$dest_tbi" ]]; then
       if [[ -n "$remote_size_tbi" ]]; then
         local local_size_tbi
@@ -231,7 +206,6 @@ setup_1000G(){
       fi
     fi
 
-    # Resume TBI if partial exists
     if [[ -f "$tmp_tbi" && -n "$remote_size_tbi" ]]; then
       local part_size_tbi
       part_size_tbi=$(stat -c '%s' "$tmp_tbi" 2>/dev/null || stat -f '%z' "$tmp_tbi")
@@ -271,7 +245,6 @@ setup_1000G(){
     fi
   }
 
-  # Concurrency controller
   local -a pids=()
   local -i max_jobs
   max_jobs=$(( threads > 0 ? threads : 1 ))
@@ -283,11 +256,9 @@ setup_1000G(){
     if (( ${#pids[@]} >= max_jobs )); then
       wait "${pids[0]}" || die "One of the downloads failed."
       unset 'pids[0]'
-      # compact array
       pids=(${pids[@]})
     fi
   done
-  # wait remaining
   local pid
   for pid in "${pids[@]}"; do
     wait "$pid" || die "One of the downloads failed."
@@ -302,10 +273,8 @@ setup_beagle_maps_b38(){
   local dest_zip="${dir}/plink.GRCh38.map.zip"
   local tmp_zip="${dest_zip}.part"
 
-  # If required chromosome maps already exist and are non-empty, skip
   have_chr_map(){
     local chr="$1"
-    # Prefer exact known naming; fall back to any map containing chr token
     if find "$dir" -maxdepth 1 -type f -name "plink.chr${chr}.GRCh38.map" -size +0c | grep -q .; then
       return 0
     fi
@@ -329,12 +298,10 @@ setup_beagle_maps_b38(){
 
   log "==> [beagle_maps_b38] Downloading Beagle GRCh38 PLINK maps zip…"
 
-  # Get remote size if available
   local remote_size
   remote_size="$(wget --spider --server-response -O - "$url_zip" 2>&1 \
     | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
 
-  # If completed zip exists with same size, skip downloading
   if [[ -s "$dest_zip" && -n "$remote_size" ]]; then
     local local_size
     local_size=$(stat -c '%s' "$dest_zip" 2>/dev/null || stat -f '%z' "$dest_zip")
@@ -346,7 +313,6 @@ setup_beagle_maps_b38(){
     fi
   fi
 
-  # Download/resume zip
   if [[ ! -s "$dest_zip" ]]; then
     if ! wget -c \
           --tries=10 \
@@ -361,7 +327,6 @@ setup_beagle_maps_b38(){
       wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp_zip" "$url_zip"
     fi
 
-    # Verify size if known
     if [[ -n "$remote_size" ]]; then
       local final_size
       final_size=$(stat -c '%s' "$tmp_zip" 2>/dev/null || stat -f '%z' "$tmp_zip")
@@ -373,14 +338,8 @@ setup_beagle_maps_b38(){
     mv -f "$tmp_zip" "$dest_zip"
   fi
 
-  # Test and extract zip to a temporary directory
   local tmpdir
   tmpdir=$(mktemp -d)
-  # Ensure cleanup on function return. With `set -u`, expand the value now so
-  # the trap doesn't reference an out-of-scope local later.
-  # Expand the directory path now and embed it quoted in the trap command,
-  # so that when the RETURN trap runs under `set -u`, it does not reference
-  # the local variable (which would be unset at that time).
   trap "rm -rf \"$tmpdir\" 2>/dev/null || true" RETURN
 
   if ! unzip -tq "$dest_zip" >/dev/null; then
@@ -389,7 +348,6 @@ setup_beagle_maps_b38(){
 
   unzip -q -o "$dest_zip" -d "$tmpdir"
 
-  # Move .map files into destination directory
   shopt -s nullglob
   local moved=0
   local f
@@ -405,7 +363,6 @@ setup_beagle_maps_b38(){
 
   log "[beagle_maps_b38] Moved ${moved} .map files to $dir"
 
-  # Final verification: ensure required maps exist after extraction
   all_ok=1
   for c in $(seq 1 22); do
     if ! have_chr_map "$c"; then all_ok=0; break; fi
@@ -414,12 +371,10 @@ setup_beagle_maps_b38(){
     die "[beagle_maps_b38] Missing one or more required chromosome maps after extraction."
   fi
 
-  # Optionally keep a readme or manifest if present
   if [[ -f "$tmpdir/README.txt" ]]; then
     mv -f "$tmpdir/README.txt" "$dir/" || true
   fi
 
-  # Optionally remove the zip after successful extraction to save space
   rm -f "$dest_zip" 2>/dev/null || true
 }
 
@@ -431,12 +386,10 @@ setup_chain(){
 
   log "==> [chain] Ensuring liftOver chain at $dest"
 
-  # Best-effort size probe
   local remote_size
   remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
     | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
 
-  # If exists and passes gzip -t (and size matches if known), skip
   if [[ -s "$dest" ]]; then
     if gzip -t "$dest" 2>/dev/null; then
       if [[ -n "$remote_size" ]]; then
@@ -457,7 +410,7 @@ setup_chain(){
     fi
   fi
 
-  # Resume or fresh download
+
   if ! wget -c \
         --tries=10 \
         --waitretry=5 \
@@ -471,7 +424,6 @@ setup_chain(){
     wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
   fi
 
-  # Verify size if known and gzip integrity
   if [[ -n "$remote_size" ]]; then
     local final_size
     final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
@@ -496,12 +448,10 @@ setup_eagle_maps_b38(){
 
   log "==> [eagle_maps_b38] Ensuring Eagle genetic map at $dest"
 
-  # Best-effort size probe
   local remote_size
   remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
     | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
 
-  # If exists and passes gzip -t (and size matches if known), skip
   if [[ -s "$dest" ]]; then
     if gzip -t "$dest" 2>/dev/null; then
       if [[ -n "$remote_size" ]]; then
@@ -521,7 +471,6 @@ setup_eagle_maps_b38(){
     fi
   fi
 
-  # Resume or fresh download
   if ! wget -c \
         --tries=10 \
         --waitretry=5 \
@@ -535,7 +484,6 @@ setup_eagle_maps_b38(){
     wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
   fi
 
-  # Verify size if known and gzip integrity
   if [[ -n "$remote_size" ]]; then
     local final_size
     final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
@@ -554,10 +502,8 @@ setup_eagle_maps_b38(){
 
 setup_fasta(){
   local dir="${GENOME_DIR}/fasta"; ensure_dir "$dir"
-  # Note: GRCh19 here refers to hg19/GRCh37 content, matching historical filename
   log "==> [fasta] Ensuring GRCh38 and GRCh37 (hg19) FASTA + .fai in $dir"
 
-  # Helper: download .gz with resume, verify size + gzip, then decompress atomically to .fasta
   download_and_unpack(){
     local url="$1"          # source .gz URL
     local dest_fasta="$2"   # final .fasta path
@@ -568,14 +514,12 @@ setup_fasta(){
     local log_live="${dest_fasta}.log"
     local log_fail="${dest_fasta}.fail.log"
 
-    # Best-effort remote size probe
     get_remote_size(){
       local u="$1"
       wget --spider --server-response -O - "$u" 2>&1 \
         | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}' || true
     }
 
-    # If FASTA exists and looks valid, just ensure index
     if [[ -s "$dest_fasta" ]]; then
       if head -n1 "$dest_fasta" | grep -q '^>' ; then
         :
@@ -586,7 +530,6 @@ setup_fasta(){
     fi
 
     if [[ ! -s "$dest_fasta" ]]; then
-      # Initialize per-FASTA log and track progress by monitoring the tmp file size
       : > "$log_live"
       printf '[start] %s url=%s\n' "$(date -u +%FT%TZ)" "$url" >> "$log_live"
       local remote_size
@@ -596,7 +539,6 @@ setup_fasta(){
         local part_size0
         part_size0=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
         printf '[resume] %s part_size=%s\n' "$(date -u +%FT%TZ)" "$part_size0" >> "$log_live"
-        # If the existing partial is already larger than the reported remote size, start clean
         if [[ -n "$remote_size" && "$part_size0" -gt "$remote_size" ]]; then
           log "[fasta] Partial exceeds remote size; restarting clean for $(basename "$dest_fasta")."
           rm -f "$tmp_gz"
@@ -634,7 +576,6 @@ setup_fasta(){
         return $rc
       }
 
-      # First attempt with resume enabled
       if ! run_wget_with_progress "$url" "$tmp_gz" "$log_live" 1; then
         log "[fasta] Download failed for $(basename "$dest_fasta"). Retrying once clean after 10s…"
         printf '[retry] %s waiting-before-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
@@ -643,7 +584,6 @@ setup_fasta(){
         run_wget_with_progress "$url" "$tmp_gz" "$log_live" 0 || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[fasta] Download failed for $(basename "$dest_fasta") on retry."; }
       fi
 
-      # Verify size if known
       if [[ -n "$remote_size" ]]; then
         local final_size
         final_size=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
@@ -652,7 +592,6 @@ setup_fasta(){
           printf '[retry] %s size-mismatch-clean-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
           rm -f "$tmp_gz" 2>/dev/null || true
           run_wget_with_progress "$url" "$tmp_gz" "$log_live" 0 || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[fasta] Download failed for $(basename "$dest_fasta") after clean retry."; }
-          # Re-check size if known
           final_size=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
           if [[ "$final_size" != "$remote_size" ]]; then
             mv -f "$log_live" "$log_fail" 2>/dev/null || true
@@ -661,7 +600,6 @@ setup_fasta(){
         fi
       fi
 
-      # Validate and decompress
       if ! gzip -t "$tmp_gz" 2>/dev/null; then
         log "[fasta] Gzip integrity failed for $(basename "$dest_fasta"). Retrying once clean…"
         printf '[retry] %s gzip-test-clean-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
@@ -686,14 +624,13 @@ setup_fasta(){
       rm -f "$log_live" 2>/dev/null || true
     fi
 
-    # Build index if missing or stale
+
     if [[ ! -s "${dest_fasta}.fai" || "${dest_fasta}.fai" -ot "$dest_fasta" ]]; then
       log "[fasta] Indexing $(basename "$dest_fasta")"
       samtools faidx "$dest_fasta"
     fi
   }
 
-  # Run both downloads (GRCh38 and GRCh37) in parallel from UCSC (stable source)
   local -a pids=()
 
   download_and_unpack \
@@ -719,23 +656,19 @@ setup_jars(){
   local dir="${GENOME_DIR}/jars"; ensure_dir "$dir"
   log "==> [jars] Ensuring Beagle and bref3 JARs in $dir"
 
-  # Define artifacts
   local url_beagle="https://faculty.washington.edu/browning/beagle/beagle.27Feb25.75f.jar"
   local url_bref3="https://faculty.washington.edu/browning/beagle/bref3.27Feb25.75f.jar"
   local dest_beagle="${dir}/beagle.27Feb25.75f.jar"
   local dest_bref3="${dir}/bref3.27Feb25.75f.jar"
 
-  # Helper to download with resume and verify ZIP/JAR integrity
   fetch_jar(){
     local url="$1"; local dest="$2"
     local tmp="${dest}.part"
 
-    # Probe remote size
     local remote_size
     remote_size="$(wget --spider --server-response -O - "$url" 2>&1 \
       | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}')" || true
 
-    # Skip if existing passes a zip integrity check and matches size (if known)
     if [[ -s "$dest" ]]; then
       if unzip -tq "$dest" >/dev/null 2>&1; then
         if [[ -n "$remote_size" ]]; then
@@ -755,7 +688,6 @@ setup_jars(){
       fi
     fi
 
-    # Download with resume and retries (follow redirects just in case)
     if ! wget -c -L \
           --tries=10 \
           --waitretry=5 \
@@ -769,7 +701,6 @@ setup_jars(){
       wget -c -L --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
     fi
 
-    # Verify size if known
     if [[ -n "$remote_size" ]]; then
       local final_size
       final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
@@ -778,7 +709,6 @@ setup_jars(){
       fi
     fi
 
-    # Integrity check as ZIP
     if ! unzip -tq "$tmp" >/dev/null 2>&1; then
       die "[jars] Integrity check failed for $(basename "$dest")."
     fi
@@ -787,7 +717,6 @@ setup_jars(){
     log "[jars] Ready: $(basename "$dest")"
   }
 
-  # Download in parallel
   local -a pids=()
   fetch_jar "$url_beagle" "$dest_beagle" & pids+=("$!")
   fetch_jar "$url_bref3" "$dest_bref3" & pids+=("$!")
@@ -831,7 +760,6 @@ while [[ $# -gt 0 ]]; do
     --dry-run)
       DRY_RUN=1; shift ;;
     --all|*)
-      # default is --all; unrecognized positional triggers default path
       shift || true ;;
   esac
 done
@@ -841,15 +769,13 @@ if (( DO_LIST )); then
   exit 0
 fi
 
-# Build selection
 SELECTED=()
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a SELECTED <<< "$ONLY"
 else
   SELECTED=("${SUPPORTED[@]}")
 fi
-
-# Validate names
+  
 for n in "${SELECTED[@]}"; do
   contains "$n" "${SUPPORTED[@]}" || die "Unsupported subfolder: $n"
 done

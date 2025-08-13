@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# scripts/pipeline/build_refs.sh
-# Purpose: Build local reference artifacts from already-downloaded data
-#   - ref_bcfs_b38: Convert 1000G VCFs to BCF + CSI (bcftools)
-#   - ref_brefs_b38: Convert 1000G VCFs to bref3 (bref3 JAR)
-
-# -----------------------------------------------------------------------------
 # Host vs container switch (mirror user.sh/add_pgs.sh behavior)
-# -----------------------------------------------------------------------------
 if [ -z "${INSIDE_DOCKER:-}" ]; then
   THIS_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
   PROJECT_ROOT=$(cd -- "${THIS_SCRIPT_DIR}/../../" &> /dev/null && pwd)
@@ -18,13 +11,11 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
     -e INSIDE_DOCKER=1 \
     -v "${PROJECT_ROOT}:/app" \
     "$DOCKER_IMAGE" \
-    /app/scripts/pipeline/build_refs.sh "$@"
+    /app/scripts/helpers/build_refs.sh "$@"
   exit 0
 fi
 
-# -----------------------------------------------------------------------------
 # Container worker
-# -----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/config.sh"
@@ -156,8 +147,6 @@ setup_ref_bcfs_b38(){
       fi
     fi
 
-    # Quick sanity: ensure BCF has at least one data row.
-    # Avoid head in a pipeline under 'set -o pipefail' to prevent false failures on SIGPIPE.
     local out_rows
     out_rows=$(bcftools view -H "$tmp_bcf" | wc -l | awk '{print $1}')
     if [[ -z "$out_rows" || "$out_rows" -eq 0 ]]; then
@@ -171,7 +160,6 @@ setup_ref_bcfs_b38(){
 
     log "[ref_bcfs_b38 chr${chr}] Indexing (CSI)"
     printf '[index] %s start\n' "$(date -u +%FT%TZ)" >> "$log_live"
-    # Remove any existing index first to avoid conflicts
     rm -f "$out_csi" 2>/dev/null || true
     
     if ! bcftools index -f -c "$out_bcf" >>"$log_live" 2>&1; then
@@ -179,7 +167,6 @@ setup_ref_bcfs_b38(){
       die "[ref_bcfs_b38 chr${chr}] bcftools index failed"
     fi
     
-    # Wait a moment for file system sync, then verify index was created
     sleep 0.1
     if [[ ! -s "$out_csi" ]]; then
       # Retry indexing once more
@@ -219,16 +206,11 @@ setup_ref_brefs_b38(){
   local in_dir="${GENOME_DIR}/1000G"
   local jar_dir="${GENOME_DIR}/jars"
   local bref3_jar="${jar_dir}/bref3.27Feb25.75f.jar"
-  # Default to a larger heap and lower parallelism; can be overridden via env
   local java_mem="${BREF3_MEM:-8g}"
   local threads="${BREF3_THREADS:-${THREADS:-2}}"
-  # Optional prefilter to biallelic SNVs/short INDELs (off by default).
-  # Enable only if you explicitly set BREF3_FILTER=1.
   local do_prefilter="${BREF3_FILTER:-0}"
-  # Maximum allele length to keep during prefiltering (applies to REF or ALT)
   local max_indel_len="${BREF3_MAX_INDEL_LEN:-50}"
 
-  # Detect memory limit and adjust parallelism to avoid overcommitting Java heaps
   to_mb(){
     local v="$1"; v=${v,,}
     if [[ "$v" =~ ^([0-9]+)g$ ]]; then echo $(( ${BASH_REMATCH[1]} * 1024 ));
@@ -236,9 +218,7 @@ setup_ref_brefs_b38(){
     elif [[ "$v" =~ ^[0-9]+$ ]]; then echo "$v"; else echo 0; fi
   }
   local xmx_mb; xmx_mb=$(to_mb "$java_mem")
-  # cgroup v2
   local cgroup_limit_bytes=""; [[ -r /sys/fs/cgroup/memory.max ]] && cgroup_limit_bytes=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
-  # cgroup v1
   if [[ -z "$cgroup_limit_bytes" || "$cgroup_limit_bytes" == "max" ]]; then
     [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]] && cgroup_limit_bytes=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true)
   fi
@@ -251,7 +231,6 @@ setup_ref_brefs_b38(){
   fi
   local safe_jobs="$threads"
   if (( xmx_mb > 0 && mem_total_mb > 0 )); then
-    # Keep ~70% for Java heaps; leave room for overhead
     local budget_mb=$(( mem_total_mb * 70 / 100 ))
     local cap=$(( budget_mb / xmx_mb ))
     if (( cap < 1 )); then cap=1; fi
@@ -262,12 +241,9 @@ setup_ref_brefs_b38(){
   fi
   local -i max_jobs_global=$(( (safe_jobs>0)?safe_jobs:1 ))
 
-  # Adjust Java heap per job downward if requested Xmx exceeds safe per-job budget
   if (( mem_total_mb > 0 && xmx_mb > 0 )); then
-    # 70% of total memory reserved for Java heaps across all jobs
     local budget_mb=$(( mem_total_mb * 70 / 100 ))
     local per_job_budget_mb=$(( budget_mb / max_jobs_global ))
-    # Leave a small headroom per process to reduce OOM from native memory
     local headroom_mb=256
     if (( per_job_budget_mb > headroom_mb )); then
       per_job_budget_mb=$(( per_job_budget_mb - headroom_mb ))
@@ -285,7 +261,6 @@ setup_ref_brefs_b38(){
   log "==> [ref_brefs_b38] Converting 1000G VCFs → bref3 into $out_dir (parallel: $max_jobs_global)"
   [[ -s "$bref3_jar" ]] || die "[ref_brefs_b38] Missing $bref3_jar (run download_data.sh --only jars first)"
 
-  # Preflight: ensure Java runtime is compatible (bref3 requires Java 17+)
   if command -v java >/dev/null 2>&1; then
     local jver_raw jver_str jmajor
     jver_raw=$(java -version 2>&1 | head -n1 || true)
@@ -301,7 +276,6 @@ setup_ref_brefs_b38(){
     die "[ref_brefs_b38] 'java' not found in PATH; install OpenJDK 17 and retry."
   fi
 
-  # Detect bref3 CLI mode: key=value (vcf= out=) vs positional ([vcf] <nseq> > bref3)
   local bref3_mode="positional"
   local bref3_help
   bref3_help=$(java -jar "$bref3_jar" help 2>&1 || true)
@@ -328,14 +302,11 @@ setup_ref_brefs_b38(){
     local out_prefix="${out_dir}/${base}"
     local out_bref3="${out_prefix}.bref3"
 
-    # Skip if up-to-date
     if [[ -s "$out_bref3" && "$out_bref3" -nt "$in_vcf" ]]; then
       log "[ref_brefs_b38 chr${chr}] Up-to-date; skipping."
       return 0
     fi
 
-    # Work in a temp dir for atomicity. Use EXIT trap (not RETURN) so cleanup
-    # runs when the background subshell exits, not after every function return.
     local tmpdir
     tmpdir=$(mktemp -d)
     local cleanup_tmp
@@ -345,11 +316,8 @@ setup_ref_brefs_b38(){
     local tmp_prefix="${tmpdir}/chr${chr}"
     local tmp_bref3="${tmp_prefix}.bref3"
 
-    # Ensure tabix index exists for input VCF (bref3 relies on random access)
     [[ -f "${in_vcf}.tbi" ]] || tabix -f -p vcf "$in_vcf" >/dev/null 2>&1 || true
 
-    # Optionally pre-filter to biallelic SNVs/short INDELs to reduce memory and
-    # avoid SV/symbolic alleles that bref3 does not use for imputation.
     local vcf_for_bref="$in_vcf"
     local tmp_vcfgz="${tmpdir}/chr${chr}.biallelic.snvindel.vcf.gz"
     if [[ "$do_prefilter" == "1" ]]; then
@@ -357,8 +325,6 @@ setup_ref_brefs_b38(){
         die "[ref_brefs_b38 chr${chr}] bcftools not found; required for BREF3_FILTER=1"
       fi
       log "[ref_brefs_b38 chr${chr}] Prefiltering to biallelic SNVs/short INDELs (≤${max_indel_len}bp)"
-      # Keep only biallelic SNV/INDEL; drop long alleles and any symbolic ALT
-      # Stream to bgzip to minimize disk I/O
       if ! bcftools view -m2 -M2 -v snps,indels "$in_vcf" \
           | bcftools filter -e "strlen(REF) > ${max_indel_len} || strlen(ALT) > ${max_indel_len} || ALT ~ '<'" - \
           | bgzip -c > "$tmp_vcfgz"; then
@@ -369,16 +335,12 @@ setup_ref_brefs_b38(){
     fi
 
     log "[ref_brefs_b38 chr${chr}] Running bref3 converter"
-    # Live log in output folder so users can tail progress; on failure it's
-    # renamed to .fail.log; on success it's removed.
     local log_live="${out_prefix}.bref3.log"
     local log_fail="${out_prefix}.bref3.fail.log"
-    # Primary invocation against bref3, supporting both CLI modes
     local run_bref3
     if [[ "$bref3_mode" == "kv" ]]; then
       run_bref3=(java -XX:+ExitOnOutOfMemoryError -Xmx"$java_mem" -jar "$bref3_jar" vcf="$vcf_for_bref" out="$tmp_prefix")
     else
-      # Positional mode: if VCF is gzipped, stream via zcat; otherwise cat
       if [[ "$vcf_for_bref" == *.gz ]]; then
         run_bref3=(bash -c 'zcat "$1" | java -XX:+ExitOnOutOfMemoryError -Xmx"$2" -jar "$3" > "$4"' _ "$vcf_for_bref" "$java_mem" "$bref3_jar" "$tmp_bref3")
       else
@@ -386,11 +348,9 @@ setup_ref_brefs_b38(){
       fi
     fi
     : > "$log_live"
-    # Launch bref3 in background and monitor output file size as progress
     "${run_bref3[@]}" >>"$log_live" 2>&1 &
     local bref3_pid=$!
     (
-      # Monitoring subshell should not fail on unset vars
       set +e
       set +u
       local last_size=0
@@ -413,10 +373,6 @@ setup_ref_brefs_b38(){
     local rc=$?
     kill "$mon_pid" 2>/dev/null || true
     if (( rc != 0 )); then
-      # Retry once. If no explicit prefilter was applied, and bcftools is
-      # available, perform a minimal filter that drops only symbolic alleles
-      # (e.g., ALT like "<DEL>", breakends with '[' or ']', and '*'). This is
-      # the smallest necessary filtering commonly required for bref3 stability.
       log "[ref_brefs_b38 chr${chr}] First attempt failed; preparing minimal-filter retry…"
       sleep 1
       local retry_vcf="$vcf_for_bref"

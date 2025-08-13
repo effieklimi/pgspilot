@@ -181,6 +181,22 @@ debug_vcf () {
   bcftools view -H -r 1:1-5000 "$vcf" | head -n 3
 }
 
+# Ensure VCF header declares INFO/END if records may use it
+add_end_header_if_missing() {
+  local vcf="$1"
+  [[ -f "$vcf" ]] || return 0
+  if ! bcftools view -h "$vcf" | grep -q 'ID=END,'; then
+    local tmp
+    tmp="${vcf%.vcf.gz}.withEND.vcf.gz"
+    HTS_LOG_LEVEL=ERROR bcftools annotate \
+      -h <(printf '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant">\n') \
+      -Oz -o "$tmp" "$vcf"
+    tabix -f -p vcf "$tmp" || true
+    mv "$tmp" "$vcf"
+    mv "${tmp}.tbi" "${vcf}.tbi"
+  fi
+}
+
 ### 1. paths/vars 
 THREADS=${THREADS:-4}
 
@@ -204,20 +220,6 @@ MAP_DIR_EAGLE="${MAP_DIR_EAGLE:-${ROOT_DIR}/genome_data/eagle_maps_b38}"
 REF_DIR_BEAGLE="${ROOT_DIR}/genome_data/ref_brefs_b38"
 MAP_DIR_BEAGLE="${ROOT_DIR}/genome_data/beagle_maps_b38"
 
-# Debug: Check if key files exist
-echo "==> Checking key file paths:"
-echo "  CHAIN: $CHAIN $([ -f "$CHAIN" ] && echo "✓" || echo "✗")"
-echo "  MAP_DIR_EAGLE: $MAP_DIR_EAGLE $([ -d "$MAP_DIR_EAGLE" ] && echo "✓" || echo "✗")"
-if [ -d "$MAP_DIR_EAGLE" ]; then
-  echo "  Files in MAP_DIR_EAGLE:"
-  ls -la "$MAP_DIR_EAGLE/" | head -5
-fi
-echo "  MAP_DIR_BEAGLE: $MAP_DIR_BEAGLE $([ -d "$MAP_DIR_BEAGLE" ] && echo "✓" || echo "✗")"
-if [ -d "$MAP_DIR_BEAGLE" ]; then
-  echo "  Files in MAP_DIR_BEAGLE:"
-  ls -la "$MAP_DIR_BEAGLE/" | head -5
-fi
-
 OUT_DIR="${ROOT_DIR}/users/${STEM}"
 PHASED_DIR="${OUT_DIR}/phased_dir"
 IMPUTED_DIR="${OUT_DIR}/imputed_dir"
@@ -235,8 +237,34 @@ CHR_VCF="${OUT_DIR}/${STEM}.lift38.primary.chr.vcf.gz"
 
 FINAL_VCF="${OUT_DIR}/${STEM}_imputed_all.vcf.gz"
 
+# Optional quiet mode: keep echo output on console, send tool output to log
+QUIET=${QUIET:-0}
+if [[ "$QUIET" == "1" ]]; then
+  # Preserve original stdout/stderr on FD 3/4 for user-facing messages
+  exec 3>&1 4>&2
+  LOG_FILE="${OUT_DIR}/${STEM}_impute_$(date +%Y%m%d_%H%M%S).log"
+  : > "$LOG_FILE"
+  # Send default stdout/stderr of all subsequent commands to the log
+  exec 1>>"$LOG_FILE" 2>&1
+  # Wrapper that keeps console echos visible while respecting redirections/pipes
+  echo() {
+    if [[ $# -eq 0 ]]; then set -- ""; fi
+    # If stdout is a pipe (part of a pipeline), behave normally
+    if readlink_out=$(readlink /proc/self/fd/1 2>/dev/null); then
+      if [[ "$readlink_out" == pipe:* ]]; then
+        builtin echo "$@"
+        return
+      fi
+    fi
+    # Duplicate to console and current stdout (log or redirected file)
+    builtin echo "$@" >&3
+    builtin echo "$@"
+  }
+  # Inform the user once
+  echo "==> Quiet mode enabled. Detailed logs: $LOG_FILE"
+fi
+
 ### 2. gzip copy + detect build 
-echo "==> copy + gzip raw file"
 if [[ $IN_TXT == *.gz ]]; then
   cp "$IN_TXT" "$RAW_GZ"
 else
@@ -351,41 +379,76 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 
 
   elif [[ "$INPUT_BUILD" == 38 ]]; then
-    echo "==> Pre-processing TSV to add 'chr' prefix (build38)…"
+    # 1) TSV → chr-prefixed VCF (build38)
+    echo "==> Pre-processing TSV to add 'chr' prefix..."
     TEMP_TSV_GZ="${OUT_DIR}/temp_with_chr.tsv.gz"
-    zcat "$RAW_GZ" | \
-      awk 'BEGIN{OFS="\t"} /^#/ {print; next} !/^#/ {$2="chr"$2; print}' | \
-      bgzip -c > "$TEMP_TSV_GZ"
+    zcat "$RAW_GZ" \
+      | awk 'BEGIN{OFS="\t"} /^#/ {print; next} {$2="chr"$2; print}' \
+      | bgzip -c > "$TEMP_TSV_GZ"
 
-    echo "==> TSV → VCF (build38) using pre-processed TSV"
-    bcftools convert \
-      --tsv2vcf "$TEMP_TSV_GZ" \
-      -f "$FASTA_38" \
-      -s "$STEM" \
-      -Oz -o "$CHR_VCF" \
-      2>"${OUT_DIR}/${STEM}.tsv2vcf.b38.log"
+    echo "==> Converting TSV → VCF (build38)"
+    VCF38_CHR_GZ="${OUT_DIR}/${STEM}.build38.chr.vcf.gz"
+    bcftools convert --tsv2vcf "$TEMP_TSV_GZ" -f "$FASTA_38" -s "$STEM" -Oz -o "$VCF38_CHR_GZ"
+
     rm "$TEMP_TSV_GZ"
+    tabix -f -p vcf "$VCF38_CHR_GZ"
+    count_vcf_records "$VCF38_CHR_GZ" "Initial VCF (chr-prefix)"
+
+    # 2) QC raw conversion
+    echo "==> QC: initial_conversion"
+    run_qc_analysis "$VCF38_CHR_GZ" "initial_conversion" "$QC_DIR"
+
+    # 3) Patch missing ALT alleles
+    echo "==> Patching missing ALT alleles"
+    ALT_DB="${ROOT_DIR}/genome_data/alt_alleles.db"
+    [[ -f "$ALT_DB" ]] || { echo "✗ Missing $ALT_DB"; exit 1; }
+    python scripts/helpers/alt_fix.py --db "$ALT_DB" "$VCF38_CHR_GZ"
+    ALT_VCF="${VCF38_CHR_GZ%.vcf.gz}.alt.vcf.gz"
+    [[ -f "$ALT_VCF" ]] || { echo "✗ Expected $ALT_VCF"; exit 1; }
+    count_vcf_records "$ALT_VCF" "VCF after alt_fix"
+
+    # 4) Sort & index (no liftover; operate on alt-fixed build38 VCF)
+    echo "==> Sorting VCF (chr-prefix)"
+    bcftools sort -Oz -o "$CHR_VCF" "$ALT_VCF"
     tabix -f -p vcf "$CHR_VCF"
-    count_vcf_records "$CHR_VCF" "Initial VCF (build38)"
+    count_vcf_records "$CHR_VCF" "Post-sort VCF (chr-prefixed)"
 
-    echo "==> Running QC on initial build38 VCF…"
-    run_qc_analysis "$CHR_VCF" "initial_conversion" "$QC_DIR"
+    debug_vcf "$CHR_VCF"
 
-    ALT_DB="${ROOT_DIR}/static_files/alt_alleles.db"
-    echo "==> patch missing ALT alleles"
-    python "${ROOT_DIR}/scripts/helpers/alt_fix.py" --db "$ALT_DB" "$CHR_VCF"
-    count_vcf_records "${STEM}.alt.vcf.gz" "VCF after alt_fix (build38)"
+    # 5) QC after sorting (mirror post_liftover step name)
+    echo "==> QC: post_liftover"
+    run_qc_analysis "$CHR_VCF" "post_liftover" "$QC_DIR"
 
-    echo "==> Running QC on ALT-patched VCF…"
-    run_qc_analysis "${STEM}.alt.vcf.gz" "post_alt_fix" "$QC_DIR"
+    # 6) Replace contig header with hg38 lengths
+    echo "==> Re-headering $CHR_VCF with hg38 contig lengths"
+    REHEADERED="${CHR_VCF%.vcf.gz}.reheadered.vcf.gz"
 
-    echo "==> Normalizing and selecting primary contigs"
-    bcftools norm "$CHR_VCF" -Oz -o "$PRIM_VCF"
-    tabix -f -p vcf "$PRIM_VCF"
-    count_vcf_records "$PRIM_VCF" "Normalized primary-contig VCF"
+    bcftools reheader -f "${FASTA_38}.fai" "$CHR_VCF" \
+      | bcftools view -Oz -o "$REHEADERED" -
 
-    echo "==> Running QC on final pre-imputation VCF (build38)…"
-    run_qc_analysis "$PRIM_VCF" "pre_imputation" "$QC_DIR"
+    debug_vcf "$REHEADERED"
+
+    tabix -f -p vcf "$REHEADERED"
+    mv "$REHEADERED"        "$CHR_VCF"
+    mv "${REHEADERED}.tbi"  "$CHR_VCF.tbi"
+    echo "  ✓ Header replaced and indexed: $CHR_VCF"
+
+    # 7) Strip ambiguous SNPs before phasing
+    echo "==> Removing strand-ambiguous (A/T, C/G) SNPs"
+    FILTERED_VCF="${OUT_DIR}/${STEM}_stranded_clean.vcf.gz"
+    bcftools view -e '( REF="A" && ALT="T" ) || ( REF="T" && ALT="A" ) || ( REF="C" && ALT="G" ) || ( REF="G" && ALT="C" )' \
+      -Oz -o "$FILTERED_VCF" "$CHR_VCF"
+
+    debug_vcf "$FILTERED_VCF"
+
+    tabix -f -p vcf "$FILTERED_VCF"
+    mv "$FILTERED_VCF" "$CHR_VCF"
+    mv "${FILTERED_VCF}.tbi"  "$CHR_VCF.tbi"
+    count_vcf_records "$CHR_VCF" "Strand-cleaned VCF"
+
+    # 8) Final pre-imputation QC
+    echo "==> QC: pre_imputation"
+    run_qc_analysis "$CHR_VCF" "pre_imputation" "$QC_DIR"
 
   else
     echo "✗ Unexpected INPUT_BUILD=$INPUT_BUILD"
@@ -394,7 +457,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 
 
   ### 4. Eagle phasing
-  for CHR in {1..22}; do
+  for CHR in {21..22}; do
     REF_BCF="${REF_DIR_EAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bcf"
     [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
 
@@ -434,10 +497,6 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
         '
     ) | bgzip -c > "$TMP_MAP"
 
-
-
-
-
     echo "[DEBUG] validating map order:"
     zcat "$TMP_MAP" |
       awk 'NR>1 {
@@ -446,8 +505,6 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
             prev_pos = $2
             prev_cM  = $4
           }'
-
-
 
     # 2) Run Eagle
     echo "==> Eagle phasing chr${CHR}"
@@ -458,8 +515,6 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
     echo "-- reference (${REF_BCF})"
     bcftools index -s "$REF_BCF" | head -n 5
     echo "-- variant intersection count"
-    # bcftools isec -n=2 -w1 -p "${OUT_DIR}/isec_chr${CHR}" "$CHR_VCF" "$REF_BCF"
-    # echo "  $(grep -vc '^#' "${OUT_DIR}"/isec_chr"${CHR}"/0003.vcf) shared sites"
 
     "$EAGLE" \
       --vcfRef         "$REF_BCF" \
@@ -483,7 +538,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
   done
 
 ### 5. Beagle imputation
-for CHR in {1..22}; do 
+for CHR in {21..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
   REF="${REF_DIR_BEAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bref3"
   # Canonical Beagle PLINK map filename
@@ -524,24 +579,28 @@ echo "==> indexing and concatenating imputed chromosomes"
 LIST=$(mktemp)
 missing_flag=0
 
-for CHR in {1..22}; do
+for CHR in {21..22}; do
   VC="${IMPUTED_DIR}/${STEM}_imputed_chr${CHR}.vcf.gz"
   if [[ ! -f "$VC" ]]; then
     echo "✗ Missing imputed VCF for chr${CHR}: $VC" >&2
     missing_flag=1
   else
+    # Ensure END header exists to avoid htslib warnings downstream
+    add_end_header_if_missing "$VC"
     tabix -f -p vcf "$VC"
     echo "$VC" >> "$LIST"
   fi
 done
 
 if [[ $missing_flag -ne 0 ]]; then
-  echo "⚠️  Aborting: one or more per-chr imputed VCFs are missing." >&2
+  echo "Aborting: one or more per-chr imputed VCFs are missing." >&2
   rm -f "$LIST"
   exit 1
 fi
 
 bcftools concat -f "$LIST" -Oz -o "$FINAL_VCF"
+# Add END header on the concatenated VCF if needed, then (re)index
+add_end_header_if_missing "$FINAL_VCF"
 tabix -f -p vcf "$FINAL_VCF"
 rm -f "$LIST"
 
@@ -582,8 +641,3 @@ echo "    - Pre-imputation QC: $QC_DIR/pre_imputation_qc_report.txt"
 echo "    - Post-phasing QC: $QC_DIR/post_phasing_chr1_qc_report.txt"
 echo "    - Final imputation QC: $QC_DIR/post_imputation_qc_report.txt"
 echo ""
-echo "  Key things to check in the reports:"
-echo "    1. Missing rates should be <5% at each step"
-echo "    2. Data should be properly phased before imputation"
-echo "    3. Mean DR2 should be >0.3 (ideally >0.5) in final output"
-echo "    4. >30% of variants should have DR2 >0.8 for good quality"
