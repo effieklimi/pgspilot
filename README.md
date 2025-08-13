@@ -107,7 +107,6 @@ In the current pilot implementation, the PCA was run with 6 principal components
 
 **Things to keep in mind and steps that need to be taken:**
 
-- Then, delete everything inside the `pca_model` folder
 - Re-run the setup script with `bash scripts/run_setup.sh`. This should re-run the PCA
 - This might take some time to run
 - I have already configured `scripts/pipeline/setup.sh` (the "project setup" script) to run with 12 principal components next time by default by passing it the flag: `--pcs 12`
