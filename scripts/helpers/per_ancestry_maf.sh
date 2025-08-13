@@ -11,16 +11,19 @@ TMP_DIR="${PCA_DIR}/tmp"
 mkdir -p "${TMP_DIR}"
 
 # Prepare keep list
-# Build per-superpop keep lists (EUR/AFR/EAS/AMR/SAS)
+# Build per-superpop keep lists (EUR/AFR/EAS/AMR/SAS) only if missing
 for SP in AFR AMR EAS EUR SAS; do
-  awk -v sp="$SP" 'BEGIN{FS=OFS="\t"} NR>1 {gsub("\r",""); if ($3==sp) print 0,$1}' \
-    "$LABELS_PATH" > "${PCA_DIR}/labels.${SP}.keep"
+  out="${PCA_DIR}/labels.${SP}.keep"
+  if [ ! -s "$out" ]; then
+    awk -v sp="$SP" 'BEGIN{FS=OFS="\t"} NR>1 {gsub("\r",""); if ($3==sp) print 0,$1}' \
+      "$LABELS_PATH" > "$out"
+  fi
 done
 
 # Init output tmp files with header
 for SP in AFR AMR EAS EUR SAS; do
   : > "${TMP_DIR}/${SP}.maf.tmp"        # clear if exists
-  echo -e "chr\tpos\tref\talt\tmaf" > "${TMP_DIR}/${SP}.maf.tmp"
+  printf "%s\n" $'chr\tpos\tref\talt\tmaf' > "${TMP_DIR}/${SP}.maf.tmp"
 done
 
 # Per-chromosome: make PGEN (no PCA filters!) and compute freq
@@ -41,24 +44,10 @@ for c in {1..22}; do
       --freq \
       --out "${TMP_DIR}/freq_${SP}_chr${c}"
 
-    # Convert .afreq to the 5-column format, robust to column order
-    awk -v OFS="\t" '
-      NR==1{
-        for(i=1;i<=NF;i++){
-          if($i=="#CHROM"||$i=="CHROM") C=i;
-          else if($i=="POS") P=i;
-          else if($i=="REF") R=i;
-          else if($i=="ALT") A=i;
-          else if($i=="MAF") M=i;
-          else if($i=="A1_FREQ") F=i
-        }
-        next
-      }
-      {
-        chr=$C; if (chr!~/^chr/) chr="chr"chr;
-        maf=(M? $M : (($F>0.5)?1-$F:$F));
-        print chr, $P, $R, $A, maf
-      }' "${TMP_DIR}/freq_${SP}_chr${c}.afreq" >> "${TMP_DIR}/${SP}.maf.tmp"
+    # Convert .afreq to the 5-column format (robust to column order)
+    awk -v OFS='\t' -f \
+      "/app/scripts/helpers/awk/afreq_to_maf.awk" \
+      "${TMP_DIR}/freq_${SP}_chr${c}.afreq" >> "${TMP_DIR}/${SP}.maf.tmp"
   done
 done
 
