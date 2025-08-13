@@ -2,14 +2,16 @@
 
 ### Run once at the start:
 
-1. Generate a docker image:
+**1. Generate a docker image:
+**
 
 ```
 cd pgspilot
 docker build --no-cache -t pgspilot .
 ```
 
-2. Perform initial setup:
+**2. Perform initial setup:
+**
 
 ```
 bash scripts/run_setup.sh
