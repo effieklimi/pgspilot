@@ -15,7 +15,7 @@ docker build --no-cache -t pgspilot .
 bash scripts/run_setup.sh
 ```
 
-**These will (idempotently):**
+**This will (idempotently):**
 
 - Download all required files (using the 1000 Genome project expansion)
 - Build bcf and bref3 genome references
@@ -31,7 +31,7 @@ bash scripts/run_add_pgs.sh PGS002149
 
 **Key output:** a folder called `/pgs/weights` in the project route with everything you need to score users later.
 
-**These will:**
+**This will:**
 
 - Fetch the already harmonized PGS weights file from the PGS catalogue
 - Create weights files per subpopulation
