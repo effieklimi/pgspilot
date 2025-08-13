@@ -71,6 +71,7 @@ bash scripts/run_user.sh <path/to/23andMe/file>.txt
 - Imputated genome: `/users/{STEM}/{STEM}_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
 - Imputation quality control files: in `/users/{STEM}/imputation_qc_reports`
 - User's plink2 files: in `/users/{STEM}/pfiles`
+- At this stage, the user's imputed genome has been filtered to keep only variants with high imputation quality (i.e. DR2/INFO >=0.8). Important for PGS scoring.
 - Subpopulation assigned using PCA: `/users/{STEM}/ancestry.tsv`
 - User's PGS scores: `/users/{STEM}/pgs_scores`. They are organised in directories, each corresponding to one PGS score:
 
@@ -90,7 +91,7 @@ pgs_scores/
 
 - SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their population's average)
 
-## Redo PCA
+## Redo PCA locally (if you want)
 
 **Important!** PCA is used to assign each user to a subpopulation out of EUR, AMR, SAS, EAS, AFR, for PGS scoring purposes. It is **not** an ancestry, and it should not be reported as such to the user. Instead, it assigns the user into the subpopulation he/she is most similar to, specifically within the 1000 Genomes expanded panel used here. This is expected to positivelly correlate with the ancestry of the user, but it is not a robust prediction of their ancestry.
 
@@ -102,7 +103,7 @@ In the current pilot implementation, the PCA was run with 6 principal components
 - Then, delete everything inside the `pca_model` folder
 - Re-run the setup script with `bash scripts/run_setup.sh`. This should re-run the PCA
 - This might take some time to run
-- I have already configured the `scripts/pipeline/setup.sh` script (the "setup" pipeline orchestrator) to run with 12 principal components next time by configuring the flag: `--pcs 12`
+- I have already configured `scripts/pipeline/setup.sh` (the "project setup" script) to run with 12 principal components next time by default by passing it the flag: `--pcs 12`
 - PGS IDs will need to be re-run after the PCA is re-run. Delete all old PGS-related directories in `/pgs/weights`, and re-run the `bash scripts/run_add_pgs.sh <PGS_ID>`
 
 The new PCA will need to be inspected after it finishes running. Let me know at this stage, I will inspect it for you. If any changes would be needed, they would most likely be using 10 principal components instead of 12.
