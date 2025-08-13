@@ -18,7 +18,7 @@ fi
 # Container worker
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck source=/dev/null
-source "${SCRIPT_DIR}/config.sh"
+source "/app/scripts/pipeline/config.sh"
 
 GENOME_DIR="${ROOT_DIR}/genome_data"
 
