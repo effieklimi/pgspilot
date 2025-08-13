@@ -20,7 +20,6 @@ if [[ ! -d "$HM_DIR" ]]; then
 fi
 
 # Standardization table (PGS x SUBPOP -> mean, sd) for z-scoring
-# Priority: $STANDARDIZATION_TSV -> /app/... -> ./pgs/...
 STANDARDIZATION_TSV_DEFAULT="/app/pgs/weights/standardization/standardization.tsv"
 STANDARDIZATION_TSV_ALT="/pgs/weights/standardization/standardization.tsv"
 STANDARDIZATION_TSV_LOCAL="pgs/weights/standardization/standardization.tsv"
@@ -60,8 +59,6 @@ plink2 --pfile "$USER_PFILE" \
   --set-all-var-ids "$SET_FMT" --new-id-max-allele-len 200 truncate \
   --make-pgen --out "$work/user_stdids"
 
-# Build a fast lookup from (chr:pos:ref:alt) → dataset VARID from user_stdids.pvar
-# We normalize chr to numeric (strip leading 'chr') for robust joins.
 PVAR_LOOKUP="$work/pvar_lookup.tsv"
 awk 'BEGIN{FS=OFS="\t"} 
      /^#/ {next}
@@ -85,7 +82,6 @@ if [[ ! -s "$PVAR_LOOKUP" ]]; then
 fi
 
 shopt -s nullglob
-# Collect matching files; tolerate both plain and gz
 declare -a WEIGHT_FILES=()
 for pat in \
   "$HM_DIR"/*."${SUBPOP}".b38.tsv \
@@ -104,9 +100,6 @@ fi
 IFS=$'\n' WEIGHT_FILES=($(printf '%s\n' "${WEIGHT_FILES[@]}" | sort)); unset IFS
 echo "[INFO] Using weights dir: $HM_DIR (${#WEIGHT_FILES[@]} files for $SUBPOP)" >&2
 
-# Deduplicate by logical PGS identifier to avoid overwriting outputs when both
-# compressed and uncompressed weight files are present for the same PGS and SUBPOP.
-# Preference order: .tsv.gz > .tsv > .tsv.gs
 if (( ${#WEIGHT_FILES[@]} > 1 )); then
   declare -A _chosen_path
   declare -A _chosen_rank
@@ -149,7 +142,6 @@ score_one(){
   local pgsid
   pgsid="${base%%.*}"
 
-  # Ensure per-PGS output directory and prefix
   local out_dir="${RESULTS_DIR}/${pgsid}"
   mkdir -p "$out_dir"
   local out_pref="${out_dir}/${pgsid}.${SUBPOP}"
@@ -235,7 +227,6 @@ score_one(){
          }' "$weights_path" > "$score_tsv"
   fi
 
-  # Debug + emptiness handling based on data rows (exclude header)
   local n_rows
   n_rows=$(awk 'NR>1{c++} END{print c+0}' "$score_tsv" 2>/dev/null || echo 0)
   local scanned=0
@@ -250,7 +241,6 @@ score_one(){
   awk 'NR==1{print "[DEBUG] header:", $0 > "/dev/stderr"; next} NR<=6{print "[DEBUG] row:", $0 > "/dev/stderr"}' OFS='\t' "$score_tsv" || true
   if [[ "${n_rows}" -eq 0 ]]; then
     echo "[WARN] Empty score table for $weights_path; skipping." >&2
-    # Emit a clear skip marker so downstream steps and users can see it was attempted
     {
       echo "pgs_id	${pgsid}"
       echo "subpop	${SUBPOP}"
@@ -260,7 +250,6 @@ score_one(){
       echo "variants_matched	${matched}"
     } > "${out_pref}.skipped.tsv"
 
-    # Also emit empty-shaped PLINK outputs so downstream can consume uniformly
     {
       printf "FID\tIID\tSCORE1_SUM\tSCORE1_AVG\n"
       printf "%s\t%s\t0\t0\n" "${USER_ID}" "${USER_ID}"
@@ -314,7 +303,6 @@ score_one(){
     --out "${out_pref}"
 
   # 2) Derive user-level normalized score (z-score) using standardization.tsv if available
-  #    Output one-row TSV: <pgs_id, subpop, iid, raw_score, zscore, mean, sd, matched_variant_count, weights_path, trait>
   local sscore_path="${out_pref}.sscore"
   local svars_path="${out_pref}.sscore.vars"
   local norm_out="${out_pref}.normalized.tsv"

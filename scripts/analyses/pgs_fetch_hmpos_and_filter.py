@@ -1,29 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-pgs_fetch_hmpos_and_filter.py — Fetch hmPOS for a PGS ID (prefer GRCh38), liftover to GRCh38 if
-needed, then apply subpopulation-specific MAF filtering of palindromic SNPs for ALL subpops
-(EUR, AFR, EAS, AMR, SAS). Emits one TSV per subpop (+ metadata).
-
-What it does:
-  1) Resolve and download the PGS Catalog *harmonized* scoring file (hmPOS), preferring GRCh38.
-     If GRCh38 is unavailable, it fetches GRCh37 and liftover→GRCh38 once.
-  2) Use a GRCh38 FASTA (fixed path) to fetch the reference base and orient alleles.
-  3) Convert OR/HR -> ln(OR/HR); leave beta/logOR unchanged.
-  4) Build a candidate set on GRCh38 (ref/alt/effect_allele/beta) ONCE.
-  5) For each subpopulation (EUR/AFR/EAS/AMR/SAS), apply subpop MAF filtering for palindromic SNPs.
-  6) Write: <out_dir>/<PGSID>.<SUBPOP>.b38.tsv[.gz] (+ .meta.json per subpop)
-
-Dependencies:
-    pip install "pandas>=2.0" "numpy>=1.23" "requests>=2.28" "pyfaidx>=0.7" "pyliftover>=0.4"
-
-Fixed paths (override via ENV if ever needed):
-    FASTA38_PATH        = /app/genome_data/fasta/Homo_sapiens_assembly38.fasta
-    CHAIN37TO38_PATH    = /app/genome_data/chain/hg19ToHg38.over.chain.gz
-    MAF_DIR_DEFAULT     = /app/pca_model
-    OUT_DIR_DEFAULT     = /app/pgs/weights/harmonized
-"""
-
 from __future__ import annotations
 
 import argparse, io, os, sys, json, gzip, logging, math, hashlib, tempfile, datetime as dt

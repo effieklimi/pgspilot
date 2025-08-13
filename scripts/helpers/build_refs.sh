@@ -69,7 +69,7 @@ setup_ref_bcfs_b38(){
       return 0
     fi
 
-    # Basic input sanity: ensure input has non-zero variant records; ensure index exists
+    # Basic input sanity - ensure input has non-zero variant records; ensure index exists
     local in_size
     in_size=$(stat -c '%s' "$in_vcf" 2>/dev/null || stat -f '%z' "$in_vcf")
     if [[ -z "$in_size" || "$in_size" -le 0 ]]; then

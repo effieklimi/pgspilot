@@ -54,7 +54,6 @@ def build_alt_database(ref_dir=None):
         )
     """)
     
-    # Look for BCF files (same pattern as your imputation script)
     file_pattern = f"{ref_dir}/1kGP_high_coverage_Illumina.chr*.filtered.SNV_INDEL_SV_phased_panel.bcf"
     ref_files = glob.glob(file_pattern)
     
@@ -67,16 +66,13 @@ def build_alt_database(ref_dir=None):
     
     total_variants = 0
     for ref_file in sorted(ref_files):
-        # Extract chromosome from filename (1kGP_high_coverage_Illumina.chr1.filtered.SNV_INDEL_SV_phased_panel.bcf -> 1)
         basename = os.path.basename(ref_file)
         chr_part = basename.replace('1kGP_high_coverage_Illumina.chr', '').replace('.filtered.SNV_INDEL_SV_phased_panel.bcf', '')
             
         print(f"  Processing chr{chr_part}...")
         
-        # Extract variants from BCF using bcftools
         variant_lines = extract_variants_from_bcf(ref_file)
         
-        # Process variants
         for line in variant_lines:
             if not line.strip():
                 continue
@@ -90,14 +86,11 @@ def build_alt_database(ref_dir=None):
             ref = fields[2]
             alt = fields[3]
             
-            # Normalize chromosome names (remove chr prefix if present)
             chrom = chrom.replace('chr', '')
             
-            # Skip complex variants and multi-allelic sites
             if ',' in alt or '*' in alt or len(ref) > 50 or len(alt) > 50:
                 continue
             
-            # Insert with both chr-prefixed and non-prefixed versions
             for chr_format in [chrom, f"chr{chrom}"]:
                 cur.execute(
                     "INSERT OR IGNORE INTO alt_alleles (chrom, pos, ref, alt) VALUES (?, ?, ?, ?)",
@@ -110,7 +103,6 @@ def build_alt_database(ref_dir=None):
                 print(f"    Processed {total_variants:,} variants...")
                 conn.commit()  # Periodic commits
     
-    # Create index for faster lookups
     print("📊 Creating database index...")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_lookup ON alt_alleles (chrom, pos, ref)")
     
@@ -120,7 +112,6 @@ def build_alt_database(ref_dir=None):
     print(f"✅ ALT alleles database created: {db_path}")
     print(f"📊 Total variants: {total_variants:,}")
     
-    # Test the database
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM alt_alleles")

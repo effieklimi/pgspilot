@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# ---------- Fixed paths ----------
+# Fixed paths
 VCF_PATTERN="/app/genome_data/1000G/1kGP_high_coverage_Illumina.chr{chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
 LABELS_PATH="/app/scripts/helpers/integrated_call_samples_v3.20130502.ALL.panel"
 
@@ -10,24 +10,23 @@ PCA_DIR="/app/pca_model"
 TMP_DIR="${PCA_DIR}/tmp"
 mkdir -p "${TMP_DIR}"
 
-# ---------- Prepare keep list ----------
-# --------- Build per-superpop keep lists (EUR/AFR/EAS/AMR/SAS) ----------
+# Prepare keep list
+# Build per-superpop keep lists (EUR/AFR/EAS/AMR/SAS)
 for SP in AFR AMR EAS EUR SAS; do
   awk -v sp="$SP" 'BEGIN{FS=OFS="\t"} NR>1 {gsub("\r",""); if ($3==sp) print 0,$1}' \
     "$LABELS_PATH" > "${PCA_DIR}/labels.${SP}.keep"
 done
 
-# --------- Init output tmp files with header ----------
+# Init output tmp files with header
 for SP in AFR AMR EAS EUR SAS; do
   : > "${TMP_DIR}/${SP}.maf.tmp"        # clear if exists
   echo -e "chr\tpos\tref\talt\tmaf" > "${TMP_DIR}/${SP}.maf.tmp"
 done
 
-# --------- Per-chromosome: make PGEN (no PCA filters!) and compute freq ----------
+# Per-chromosome: make PGEN (no PCA filters!) and compute freq
 for c in {1..22}; do
   VCF_PATH="${VCF_PATTERN/\{chr\}/$c}"
 
-  # Create inclusive per-chr PGEN for frequency calc
   plink2 \
     --vcf "${VCF_PATH}" \
     --snps-only just-acgt --max-alleles 2 \
@@ -63,7 +62,6 @@ for c in {1..22}; do
   done
 done
 
-# --------- Finalise (sort/uniq, gzip) ----------
 for SP in AFR AMR EAS EUR SAS; do
   sort -u "${TMP_DIR}/${SP}.maf.tmp" > "${PCA_DIR}/maf_${SP}.grch38.tsv"
   gzip -f "${PCA_DIR}/maf_${SP}.grch38.tsv"

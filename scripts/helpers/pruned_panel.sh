@@ -27,14 +27,14 @@ if [ "$overlap" -eq 0 ]; then
   exit 1
 fi
 
-# ---------- Exclude xMHC region (support both '6' and 'chr6') ----------
+# Exclude xMHC region (support both '6' and 'chr6')
 MHC_FILE="${TMP_DIR}/mhc_exclude.bed1"
 {
   printf "6\t25000000\t34000000\n"
   printf "chr6\t25000000\t34000000\n"
 } > "$MHC_FILE"
 
-# ---------- Per-chromosome processing ----------
+# Per-chromosome processing
 for c in {1..22}; do
   VCF_PATH="${VCF_PATTERN/\{chr\}/$c}"
 
@@ -58,8 +58,7 @@ done
 # 4) Combine pruned IDs across chromosomes, de-dup
 cat ${TMP_DIR}/chr*.prune.in | sort -u > "${PCA_DIR}/panel.ids"
 
-# 5) Build chr pos ref alt table (PVAR: CHROM POS ID REF ALT ...)
-# 5) Build chr pos ref alt table (with header)
+# 5) Build chr pos ref alt table 
 {
   echo -e "chr\tpos\tref\talt"
   awk 'NR==FNR{keep[$1]=1;next} ($3 in keep){print $1"\t"$2"\t"$4"\t"$5}' \
