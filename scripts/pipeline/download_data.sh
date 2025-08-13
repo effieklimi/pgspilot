@@ -96,6 +96,8 @@ setup_1000G(){
     local url="${base_url}/${name}"
     local dest="${dir}/${name}"
     local tmp="${dest}.part"
+    local log_live="${dest}.log"
+    local log_fail="${dest}.fail.log"
     local name_tbi="${name}.tbi"
     local url_tbi="${base_url}/${name_tbi}"
     local dest_tbi="${dir}/${name_tbi}"
@@ -105,22 +107,27 @@ setup_1000G(){
     local remote_size
     remote_size="$(get_remote_size "$url")"
 
-    # If final file exists and matches expected size (when known), skip
+    # Ensure VCF exists and is complete; do not return early to allow TBI check
+    local need_vcf_download=1
     if [[ -s "$dest" ]]; then
+      local vcf_ok=0
       if [[ -n "$remote_size" ]]; then
         local local_size
         local_size=$(stat -c '%s' "$dest" 2>/dev/null || stat -f '%z' "$dest")
         if [[ "$local_size" == "$remote_size" ]]; then
-          log "[1000G chr${chr}] Exists (size OK: $local_size). Skipping."
-          return 0
+          vcf_ok=1
         fi
       fi
-      # Fallback: light header validation
-      if validate_header "$dest"; then
-        log "[1000G chr${chr}] Exists (header OK). Skipping."
-        return 0
+      if (( vcf_ok == 0 )) && validate_header "$dest"; then
+        vcf_ok=1
+      fi
+      if (( vcf_ok == 1 )); then
+        log "[1000G chr${chr}] VCF exists and looks complete."
+        need_vcf_download=0
+        # Clean up any leftover partial to avoid confusing resume logs next time
+        [[ -f "$tmp" ]] && rm -f "$tmp" 2>/dev/null || true
       else
-        log "[1000G chr${chr}] Existing file seems incomplete; will resume."
+        log "[1000G chr${chr}] Existing VCF seems incomplete; will resume."
         mv -f "$dest" "$tmp"
       fi
     fi
@@ -132,57 +139,96 @@ setup_1000G(){
       log "[1000G chr${chr}] Resuming: $part_size / ${remote_size:-?} bytes"
     fi
 
-    # Robust wget with resume and retries
-    # Options: -c resume, --tries, --waitretry, --read-timeout, --timeout, --retry-connrefused
-    if ! wget -c \
+    if (( need_vcf_download == 1 )); then
+      # Initialize per-VCF log and track progress by monitoring the tmp file size
+      : > "$log_live"
+      printf '[start] %s url=%s\n' "$(date -u +%FT%TZ)" "$url" >> "$log_live"
+      if [[ -n "$remote_size" ]]; then printf '[remote] size=%s\n' "$remote_size" >> "$log_live"; fi
+      if [[ -f "$tmp" ]]; then
+        local part_size0
+        part_size0=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
+        printf '[resume] %s part_size=%s\n' "$(date -u +%FT%TZ)" "$part_size0" >> "$log_live"
+      fi
+
+      # Helper: run wget once with a progress monitor
+      run_wget_with_progress(){
+        : "${1:?missing url}" "${2:?missing tmp}" "${3:?missing log}"
+        wget -c \
           --tries=10 \
           --waitretry=5 \
           --read-timeout=60 \
           --timeout=60 \
           --retry-connrefused \
           --no-verbose \
-          -O "$tmp" "$url"; then
-      log "[1000G chr${chr}] Download failed. Retrying once after 10s…"
-      sleep 10
-      wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp" "$url"
-    fi
+          -O "$2" "$1" >>"$3" 2>&1 &
+        local wpid=$!
+        (
+          set +e; set +u
+          local last_size=0
+          while kill -0 "$wpid" 2>/dev/null; do
+            local size
+            size=$( (wc -c < "$2") 2>/dev/null || echo 0 )
+            local delta=$(( size - last_size ))
+            printf '[progress] %s size=%s delta=%s\n' "$(date -u +%FT%TZ)" "$size" "$delta" >> "$3"
+            last_size=$size
+            sleep 10
+          done
+        ) & local mon_pid=$!
+        wait "$wpid"; local rc=$?
+        kill "$mon_pid" 2>/dev/null || true
+        return $rc
+      }
 
-    # Verify completion (VCF)
-    if [[ -n "$remote_size" ]]; then
-      local final_size
-      final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
-      if [[ "$final_size" != "$remote_size" ]]; then
-        die "[1000G chr${chr}] Size mismatch after download ($final_size != $remote_size)"
+      if ! run_wget_with_progress "$url" "$tmp" "$log_live"; then
+        log "[1000G chr${chr}] Download failed. Retrying once after 10s…"
+        printf '[retry] %s waiting-before-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
+        sleep 10
+        run_wget_with_progress "$url" "$tmp" "$log_live" || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[1000G chr${chr}] Download failed on retry."; }
+      fi
+
+      # Verify completion (VCF)
+      if [[ -n "$remote_size" ]]; then
+        local final_size
+        final_size=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp")
+        if [[ "$final_size" != "$remote_size" ]]; then
+          mv -f "$log_live" "$log_fail" 2>/dev/null || true
+          die "[1000G chr${chr}] Size mismatch after download ($final_size != $remote_size)"
+        fi
+      fi
+
+      if ! validate_header "$tmp"; then
+        mv -f "$log_live" "$log_fail" 2>/dev/null || true
+        die "[1000G chr${chr}] Missing VCF header signature; file may be corrupted."
+      fi
+
+      if [[ -f "$tmp" ]]; then
+        mv -f "$tmp" "$dest"
+        log "[1000G chr${chr}] Done → $(basename "$dest")"
+        rm -f "$log_live" 2>/dev/null || true
       fi
     fi
-
-    if ! validate_header "$tmp"; then
-      die "[1000G chr${chr}] Missing VCF header signature; file may be corrupted."
-    fi
-
-    mv -f "$tmp" "$dest"
-    log "[1000G chr${chr}] Done → $(basename "$dest")"
 
     # --- Download matching TBI index ---
     # Determine remote size for TBI if possible
     local remote_size_tbi
     remote_size_tbi="$(get_remote_size "$url_tbi")"
 
-    # Skip if .tbi exists and appears complete
+    # Skip/resume logic for TBI
     if [[ -s "$dest_tbi" ]]; then
       if [[ -n "$remote_size_tbi" ]]; then
         local local_size_tbi
         local_size_tbi=$(stat -c '%s' "$dest_tbi" 2>/dev/null || stat -f '%z' "$dest_tbi")
         if [[ "$local_size_tbi" == "$remote_size_tbi" ]]; then
           log "[1000G chr${chr}] TBI exists (size OK: $local_size_tbi). Skipping."
-          return 0
+          :
+        else
+          log "[1000G chr${chr}] TBI exists but size mismatch; will resume."
+          mv -f "$dest_tbi" "$tmp_tbi"
         fi
-      fi
-      if [[ -s "$dest_tbi" ]]; then
+      else
         log "[1000G chr${chr}] TBI exists (non-empty). Skipping."
-        return 0
+        :
       fi
-      mv -f "$dest_tbi" "$tmp_tbi"
     fi
 
     # Resume TBI if partial exists
@@ -192,7 +238,8 @@ setup_1000G(){
       log "[1000G chr${chr}] TBI resume: $part_size_tbi / ${remote_size_tbi:-?} bytes"
     fi
 
-    if ! wget -c \
+    if [[ ! -s "$dest_tbi" ]]; then
+      if ! wget -c \
           --tries=10 \
           --waitretry=5 \
           --read-timeout=60 \
@@ -200,25 +247,28 @@ setup_1000G(){
           --retry-connrefused \
           --no-verbose \
           -O "$tmp_tbi" "$url_tbi"; then
-      log "[1000G chr${chr}] TBI download failed. Retrying once after 10s…"
-      sleep 10
-      wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp_tbi" "$url_tbi"
-    fi
+        log "[1000G chr${chr}] TBI download failed. Retrying once after 10s…"
+        sleep 10
+        wget -c --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp_tbi" "$url_tbi"
+      fi
 
-    if [[ -n "$remote_size_tbi" ]]; then
-      local final_size_tbi
-      final_size_tbi=$(stat -c '%s' "$tmp_tbi" 2>/dev/null || stat -f '%z' "$tmp_tbi")
-      if [[ "$final_size_tbi" != "$remote_size_tbi" ]]; then
-        die "[1000G chr${chr}] TBI size mismatch after download ($final_size_tbi != $remote_size_tbi)"
+      if [[ -n "$remote_size_tbi" && -f "$tmp_tbi" ]]; then
+        local final_size_tbi
+        final_size_tbi=$(stat -c '%s' "$tmp_tbi" 2>/dev/null || stat -f '%z' "$tmp_tbi")
+        if [[ "$final_size_tbi" != "$remote_size_tbi" ]]; then
+          die "[1000G chr${chr}] TBI size mismatch after download ($final_size_tbi != $remote_size_tbi)"
+        fi
+      fi
+
+      if [[ -f "$tmp_tbi" && ! -s "$tmp_tbi" ]]; then
+        die "[1000G chr${chr}] TBI file is empty after download."
+      fi
+
+      if [[ -f "$tmp_tbi" ]]; then
+        mv -f "$tmp_tbi" "$dest_tbi"
+        log "[1000G chr${chr}] TBI Done → $(basename "$dest_tbi")"
       fi
     fi
-
-    if [[ ! -s "$tmp_tbi" ]]; then
-      die "[1000G chr${chr}] TBI file is empty after download."
-    fi
-
-    mv -f "$tmp_tbi" "$dest_tbi"
-    log "[1000G chr${chr}] TBI Done → $(basename "$dest_tbi")"
   }
 
   # Concurrency controller
@@ -252,11 +302,28 @@ setup_beagle_maps_b38(){
   local dest_zip="${dir}/plink.GRCh38.map.zip"
   local tmp_zip="${dest_zip}.part"
 
-  # If sufficient .map files already exist, skip
-  local existing_maps
-  existing_maps=$(find "$dir" -maxdepth 1 -type f -name '*.map' | wc -l | tr -d ' ')
-  if [[ "${existing_maps:-0}" -ge 40 ]]; then
-    log "==> [beagle_maps_b38] Found ${existing_maps} .map files; skipping download."
+  # If required chromosome maps already exist and are non-empty, skip
+  have_chr_map(){
+    local chr="$1"
+    # Prefer exact known naming; fall back to any map containing chr token
+    if find "$dir" -maxdepth 1 -type f -name "plink.chr${chr}.GRCh38.map" -size +0c | grep -q .; then
+      return 0
+    fi
+    if find "$dir" -maxdepth 1 -type f -name "*chr${chr}*.map" -size +0c | grep -q .; then
+      return 0
+    fi
+    return 1
+  }
+
+  local all_ok=1
+  local c
+  for c in $(seq 1 22); do
+    if ! have_chr_map "$c"; then all_ok=0; break; fi
+  done
+  if (( all_ok == 1 )); then
+    local existing_maps
+    existing_maps=$(find "$dir" -maxdepth 1 -type f -name '*.map' | wc -l | tr -d ' ')
+    log "==> [beagle_maps_b38] Required maps present (${existing_maps} files). Skipping download."
     return 0
   fi
 
@@ -309,10 +376,12 @@ setup_beagle_maps_b38(){
   # Test and extract zip to a temporary directory
   local tmpdir
   tmpdir=$(mktemp -d)
-  # Ensure cleanup on function exit
-  local cleanup_tmp
-  cleanup_tmp(){ rm -rf "$tmpdir" 2>/dev/null || true; }
-  trap cleanup_tmp RETURN
+  # Ensure cleanup on function return. With `set -u`, expand the value now so
+  # the trap doesn't reference an out-of-scope local later.
+  # Expand the directory path now and embed it quoted in the trap command,
+  # so that when the RETURN trap runs under `set -u`, it does not reference
+  # the local variable (which would be unset at that time).
+  trap "rm -rf \"$tmpdir\" 2>/dev/null || true" RETURN
 
   if ! unzip -tq "$dest_zip" >/dev/null; then
     die "[beagle_maps_b38] Zip integrity test failed."
@@ -335,6 +404,15 @@ setup_beagle_maps_b38(){
   fi
 
   log "[beagle_maps_b38] Moved ${moved} .map files to $dir"
+
+  # Final verification: ensure required maps exist after extraction
+  all_ok=1
+  for c in $(seq 1 22); do
+    if ! have_chr_map "$c"; then all_ok=0; break; fi
+  done
+  if (( all_ok == 0 )); then
+    die "[beagle_maps_b38] Missing one or more required chromosome maps after extraction."
+  fi
 
   # Optionally keep a readme or manifest if present
   if [[ -f "$tmpdir/README.txt" ]]; then
@@ -476,16 +554,26 @@ setup_eagle_maps_b38(){
 
 setup_fasta(){
   local dir="${GENOME_DIR}/fasta"; ensure_dir "$dir"
-  log "==> [fasta] Ensuring GRCh38 and GRCh19 FASTA + .fai in $dir"
+  # Note: GRCh19 here refers to hg19/GRCh37 content, matching historical filename
+  log "==> [fasta] Ensuring GRCh38 and GRCh37 (hg19) FASTA + .fai in $dir"
 
-  # Helper: download .gz with resume, verify gzip, decompress atomically to .fasta
+  # Helper: download .gz with resume, verify size + gzip, then decompress atomically to .fasta
   download_and_unpack(){
-    local url="$1"      # source .gz URL
-    local dest_fasta="$2"  # final .fasta path
+    local url="$1"          # source .gz URL
+    local dest_fasta="$2"   # final .fasta path
 
     local dest_gz="${dest_fasta}.gz"
     local tmp_gz="${dest_gz}.part"
     local tmp_fa="${dest_fasta}.part"
+    local log_live="${dest_fasta}.log"
+    local log_fail="${dest_fasta}.fail.log"
+
+    # Best-effort remote size probe
+    get_remote_size(){
+      local u="$1"
+      wget --spider --server-response -O - "$u" 2>&1 \
+        | awk 'tolower($0) ~ /content-length:/ {gsub("\r","",$2); print $2; exit} /Length: [0-9]+/ {gsub("\r","",$2); print $2; exit}' || true
+    }
 
     # If FASTA exists and looks valid, just ensure index
     if [[ -s "$dest_fasta" ]]; then
@@ -498,33 +586,104 @@ setup_fasta(){
     fi
 
     if [[ ! -s "$dest_fasta" ]]; then
-      # Download with resume and retries (follow redirects)
-      if ! wget -c -L \
-            --tries=10 \
-            --waitretry=5 \
-            --read-timeout=60 \
-            --timeout=60 \
-            --retry-connrefused \
-            --no-verbose \
-            -O "$tmp_gz" "$url"; then
-        log "[fasta] Download failed for $(basename "$dest_fasta"). Retrying once after 10s…"
+      # Initialize per-FASTA log and track progress by monitoring the tmp file size
+      : > "$log_live"
+      printf '[start] %s url=%s\n' "$(date -u +%FT%TZ)" "$url" >> "$log_live"
+      local remote_size
+      remote_size="$(get_remote_size "$url")"
+      if [[ -n "$remote_size" ]]; then printf '[remote] size=%s\n' "$remote_size" >> "$log_live"; fi
+      if [[ -f "$tmp_gz" ]]; then
+        local part_size0
+        part_size0=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
+        printf '[resume] %s part_size=%s\n' "$(date -u +%FT%TZ)" "$part_size0" >> "$log_live"
+        # If the existing partial is already larger than the reported remote size, start clean
+        if [[ -n "$remote_size" && "$part_size0" -gt "$remote_size" ]]; then
+          log "[fasta] Partial exceeds remote size; restarting clean for $(basename "$dest_fasta")."
+          rm -f "$tmp_gz"
+        fi
+      fi
+
+      run_wget_with_progress(){
+        : "${1:?missing url}" "${2:?missing tmp_gz}" "${3:?missing log}" "${4:-1}"
+        local do_resume="$4"
+        local resume_flag=()
+        if [[ "$do_resume" == 1 ]]; then resume_flag=(-c); fi
+        wget "${resume_flag[@]}" -L \
+          --tries=10 \
+          --waitretry=5 \
+          --read-timeout=60 \
+          --timeout=60 \
+          --retry-connrefused \
+          --no-verbose \
+          -O "$2" "$1" >>"$3" 2>&1 &
+        local wpid=$!
+        (
+          set +e; set +u
+          local last_size=0
+          while kill -0 "$wpid" 2>/dev/null; do
+            local size
+            size=$( (wc -c < "$2") 2>/dev/null || echo 0 )
+            local delta=$(( size - last_size ))
+            printf '[progress] %s size=%s delta=%s\n' "$(date -u +%FT%TZ)" "$size" "$delta" >> "$3"
+            last_size=$size
+            sleep 10
+          done
+        ) & local mon_pid=$!
+        wait "$wpid"; local rc=$?
+        kill "$mon_pid" 2>/dev/null || true
+        return $rc
+      }
+
+      # First attempt with resume enabled
+      if ! run_wget_with_progress "$url" "$tmp_gz" "$log_live" 1; then
+        log "[fasta] Download failed for $(basename "$dest_fasta"). Retrying once clean after 10s…"
+        printf '[retry] %s waiting-before-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
         sleep 10
-        wget -c -L --tries=10 --waitretry=5 --read-timeout=60 --timeout=60 --retry-connrefused --no-verbose -O "$tmp_gz" "$url"
+        rm -f "$tmp_gz" 2>/dev/null || true
+        run_wget_with_progress "$url" "$tmp_gz" "$log_live" 0 || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[fasta] Download failed for $(basename "$dest_fasta") on retry."; }
+      fi
+
+      # Verify size if known
+      if [[ -n "$remote_size" ]]; then
+        local final_size
+        final_size=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
+        if [[ "$final_size" != "$remote_size" ]]; then
+          log "[fasta] Size mismatch after download for $(basename "$dest_fasta") ($final_size != $remote_size). Retrying once clean…"
+          printf '[retry] %s size-mismatch-clean-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
+          rm -f "$tmp_gz" 2>/dev/null || true
+          run_wget_with_progress "$url" "$tmp_gz" "$log_live" 0 || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[fasta] Download failed for $(basename "$dest_fasta") after clean retry."; }
+          # Re-check size if known
+          final_size=$(stat -c '%s' "$tmp_gz" 2>/dev/null || stat -f '%z' "$tmp_gz")
+          if [[ "$final_size" != "$remote_size" ]]; then
+            mv -f "$log_live" "$log_fail" 2>/dev/null || true
+            die "[fasta] Size mismatch persists for $(basename "$dest_fasta") ($final_size != $remote_size)."
+          fi
+        fi
       fi
 
       # Validate and decompress
       if ! gzip -t "$tmp_gz" 2>/dev/null; then
-        die "[fasta] Gzip integrity failed for $(basename "$dest_fasta")."
+        log "[fasta] Gzip integrity failed for $(basename "$dest_fasta"). Retrying once clean…"
+        printf '[retry] %s gzip-test-clean-retry\n' "$(date -u +%FT%TZ)" >> "$log_live"
+        rm -f "$tmp_gz" 2>/dev/null || true
+        run_wget_with_progress "$url" "$tmp_gz" "$log_live" 0 || { mv -f "$log_live" "$log_fail" 2>/dev/null || true; die "[fasta] Download failed for $(basename "$dest_fasta") on gzip clean retry."; }
+        if ! gzip -t "$tmp_gz" 2>/dev/null; then
+          mv -f "$log_live" "$log_fail" 2>/dev/null || true
+          die "[fasta] Gzip integrity failed for $(basename "$dest_fasta") after clean retry."
+        fi
       fi
+      printf '[decompress] %s start\n' "$(date -u +%FT%TZ)" >> "$log_live"
       gzip -cd "$tmp_gz" > "$tmp_fa"
 
       if [[ ! -s "$tmp_fa" ]] || ! head -n1 "$tmp_fa" | grep -q '^>' ; then
+        mv -f "$log_live" "$log_fail" 2>/dev/null || true
         die "[fasta] Decompressed FASTA invalid for $(basename "$dest_fasta")."
       fi
 
       mv -f "$tmp_fa" "$dest_fasta"
       rm -f "$tmp_gz" "$dest_gz" 2>/dev/null || true
       log "[fasta] Ready: $(basename "$dest_fasta")"
+      rm -f "$log_live" 2>/dev/null || true
     fi
 
     # Build index if missing or stale
@@ -534,23 +693,24 @@ setup_fasta(){
     fi
   }
 
-  # Run both downloads (GRCh38 and GRCh19) possibly in parallel
+  # Run both downloads (GRCh38 and GRCh37) in parallel from UCSC (stable source)
   local -a pids=()
 
   download_and_unpack \
-    "https://github.com/broadinstitute/gatk/raw/refs/heads/master/src/test/resources/large/Homo_sapiens_assembly38.fasta.gz?download=" \
+    "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz" \
     "${dir}/Homo_sapiens_assembly38.fasta" &
   pids+=("$!")
 
   download_and_unpack \
-    "https://github.com/broadinstitute/gatk/raw/refs/heads/master/src/test/resources/large/Homo_sapiens_assembly19.fasta.gz?download=" \
+    "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.fa.gz" \
     "${dir}/Homo_sapiens_assembly19.fasta" &
   pids+=("$!")
 
-  local pid
+  local pid rc=0
   for pid in "${pids[@]}"; do
-    wait "$pid"
+    if ! wait "$pid"; then rc=1; fi
   done
+  (( rc == 0 )) || die "[fasta] One or more FASTA downloads failed."
 
   log "[fasta] GRCh38 and GRCh19 FASTA + .fai ready."
 }
@@ -647,7 +807,7 @@ run_selected(){
     case "$name" in
       1000G)             setup_1000G ;;
       beagle_maps_b38)   setup_beagle_maps_b38 ;;
-      bin)               setup_bin ;;
+      bin)               ensure_dir "${GENOME_DIR}/bin" ;;
       chain)             setup_chain ;;
       eagle_maps_b38)    setup_eagle_maps_b38 ;;
       fasta)             setup_fasta ;;
@@ -703,4 +863,4 @@ fi
 
 run_selected "${SELECTED[@]}"
 
-log "✓ Placeholders executed. Implement download logic per subfolder next."
+log "✓ Downloads complete."

@@ -1,5 +1,9 @@
-genome_data/
-genome_data_old/
+genome_data/1000G
+genome_data/fasta
+genome_data/ref_bcfs_b38
+genome_data/ref_brefs_b38
+genome_data/alt_alleles.db
+
 users/
 pca_model/
 pgs/

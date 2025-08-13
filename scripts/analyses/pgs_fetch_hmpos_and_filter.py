@@ -46,6 +46,7 @@ FASTA38_PATH        = ENV.get("PGS_FASTA38",      "/app/genome_data/fasta/Homo_s
 CHAIN37TO38_PATH    = ENV.get("PGS_CHAIN_37_38",  "/app/genome_data/chain/hg19ToHg38.over.chain.gz")
 MAF_DIR_DEFAULT     = ENV.get("PGS_MAF_DIR",      "/app/pca_model")
 OUT_DIR_DEFAULT     = ENV.get("PGS_OUT_DIR",      "/app/pgs/weights/harmonized")
+REGISTRY_CSV_DEFAULT= ENV.get("PGS_REGISTRY_CSV", "/app/pgs/weights/harmonized/registry.csv")
 
 AMBIG_MIN_DEFAULT = float(ENV.get("PGS_AMBIG_MAF_MIN", "0.45"))
 AMBIG_MAX_DEFAULT = float(ENV.get("PGS_AMBIG_MAF_MAX", "0.55"))
@@ -116,6 +117,146 @@ def atomic_write_df_tsv(df: pd.DataFrame, path: str, gzip_out: bool) -> str:
                 df.to_csv(txt, sep="\t", index=False)
     os.replace(tmp_path, final)
     return final
+
+# ── Registry CSV helpers ─────────────────────────────────────────────────
+
+REGISTRY_COLUMNS = [
+    # Core key and artifact
+    "pgs_id","subpopulation","build","weights_path","weights_md5","n_variants","weight_type","liftover_applied","created_at_utc",
+    # Provenance
+    "hmpos_url","hmpos_md5","maf_window","maf_file",
+    # Small set from PGS Catalog
+    "pgs_name","trait_reported","trait_mapped_labels","trait_mapped_efo_ids","publication_year","publication_doi",
+    # Compact QC
+    "dropped_bad_pos","dropped_liftover","dropped_allele_invalid","dropped_ref_fetch","dropped_ref_mismatch","dropped_weight_invalid",
+    "dropped_pal_maf_missing","dropped_pal_maf_ambig",
+]
+
+def _coerce_str(x) -> str:
+    if x is None:
+        return ""
+    try:
+        s = str(x)
+    except Exception:
+        s = ""
+    return s.replace("\n"," ").replace("\r"," ").strip()
+
+def _join_list(vals) -> str:
+    if vals is None:
+        return ""
+    if isinstance(vals, (list, tuple, set)):
+        return ";".join(_coerce_str(v) for v in vals if v is not None)
+    return _coerce_str(vals)
+
+def fetch_pgs_catalog_fields(pgs_id: str) -> Dict[str, str]:
+    """Fetch minimal fields from PGS Catalog REST for a PGS ID.
+    Returns: pgs_name, trait_reported, trait_mapped_labels, trait_mapped_efo_ids, publication_year, publication_doi
+    """
+    url = f"{REST_BASE}/score/{pgs_id}"
+    out = {
+        "pgs_name": "",
+        "trait_reported": "",
+        "trait_mapped_labels": "",
+        "trait_mapped_efo_ids": "",
+        "publication_year": "",
+        "publication_doi": "",
+    }
+    try:
+        r = requests.get(url, timeout=30)
+        if not r.ok:
+            return out
+        j = r.json()
+    except Exception:
+        return out
+
+    # Name
+    if isinstance(j, dict):
+        out["pgs_name"] = _coerce_str(j.get("name") or j.get("pgs_name"))
+
+    # Trait reported
+    tr = j.get("trait_reported") if isinstance(j, dict) else None
+    out["trait_reported"] = _join_list(tr)
+
+    # Trait mapped labels and EFO ids
+    labels: List[str] = []
+    efo_ids: List[str] = []
+    tm = j.get("trait_mapped") if isinstance(j, dict) else None
+    if isinstance(tm, list):
+        for item in tm:
+            if not isinstance(item, dict):
+                continue
+            lab = item.get("label") or item.get("trait_label") or item.get("name")
+            efo = item.get("efo_id") or item.get("id") or item.get("efo")
+            if isinstance(efo, str) and "/" in efo and not efo.upper().startswith("EFO_"):
+                efo = efo.rstrip("/").split("/")[-1]
+            if lab:
+                labels.append(_coerce_str(lab))
+            if efo:
+                efo_ids.append(_coerce_str(efo))
+    out["trait_mapped_labels"] = _join_list(labels)
+    out["trait_mapped_efo_ids"] = _join_list(efo_ids)
+
+    # Publication info (best-effort)
+    pub_year = None
+    pub_doi = None
+    if isinstance(j, dict):
+        pub_year = j.get("publication_year") or j.get("year")
+        pub_doi = j.get("publication_doi") or j.get("doi")
+        pub_date = j.get("publication_date") or j.get("date")
+        if not pub_year and isinstance(pub_date, str) and len(pub_date) >= 4 and pub_date[:4].isdigit():
+            pub_year = pub_date[:4]
+        pub = j.get("publication")
+        if isinstance(pub, dict):
+            pub_doi = pub_doi or pub.get("doi")
+            y = pub.get("year") or pub.get("publication_year") or pub.get("date")
+            if not pub_year and isinstance(y, str) and len(y) >= 4 and y[:4].isdigit():
+                pub_year = y[:4]
+        elif isinstance(pub, list) and pub:
+            first = pub[0]
+            if isinstance(first, dict):
+                pub_doi = pub_doi or first.get("doi")
+                y = first.get("year") or first.get("publication_year") or first.get("date")
+                if not pub_year and isinstance(y, str) and len(y) >= 4 and y[:4].isdigit():
+                    pub_year = y[:4]
+
+    out["publication_year"] = _coerce_str(pub_year)
+    out["publication_doi"] = _coerce_str(pub_doi)
+    return out
+
+def update_registry_csv(registry_path: str, row: Dict[str, str]) -> None:
+    """Upsert a row keyed by (pgs_id, subpopulation) into registry CSV, atomically."""
+    directory = os.path.dirname(registry_path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    # Normalize row to known columns
+    norm = {col: _coerce_str(row.get(col, "")) for col in REGISTRY_COLUMNS}
+
+    if os.path.exists(registry_path):
+        try:
+            df = pd.read_csv(registry_path, dtype=str)
+        except Exception:
+            df = pd.DataFrame(columns=REGISTRY_COLUMNS)
+    else:
+        df = pd.DataFrame(columns=REGISTRY_COLUMNS)
+
+    for col in REGISTRY_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[REGISTRY_COLUMNS]
+
+    key_mask = (df["pgs_id"].astype(str) == norm["pgs_id"]) & (df["subpopulation"].astype(str) == norm["subpopulation"])
+    if key_mask.any():
+        idx = df.index[key_mask][0]
+        for col in REGISTRY_COLUMNS:
+            df.at[idx, col] = norm[col]
+    else:
+        df = pd.concat([df, pd.DataFrame([norm], columns=REGISTRY_COLUMNS)], ignore_index=True)
+
+    # Atomic write
+    with tempfile.NamedTemporaryFile("w", delete=False, dir=directory, encoding="utf-8", newline="") as tmp:
+        tmp_path = tmp.name
+        df.to_csv(tmp_path, index=False)
+    os.replace(tmp_path, registry_path)
 
 # ── PGS Catalog hmPOS resolution ───────────────────────────────────────
 
@@ -311,6 +452,9 @@ def main():
     chr_c, pos_c, ea_c, oa_c, wt_c = detect_cols(df)
     weight_type_src = (meta_hdr.get("weight_type") or "").lower()
 
+    # Fetch PGS Catalog metadata once per PGS ID for registry enrichment
+    pgs_catalog_fields = fetch_pgs_catalog_fields(pgs_id)
+
     # ── Build candidate rows ONCE on GRCh38 ─────────────────────────────
     base_qc = dict(
         input_rows=int(df.shape[0]),
@@ -448,6 +592,45 @@ def main():
         atomic_write(final_tsv + ".meta.json", json.dumps(meta_out, indent=2))
         LOG.info("[OK] %s %s → %s (n=%d)", pgs_id, sub, final_tsv, out_df.shape[0])
         outputs.append(final_tsv)
+
+        # Update central CSV registry (upsert per (pgs_id, subpopulation))
+        try:
+            reg_row = {
+                # Core key and artifact
+                "pgs_id": pgs_id,
+                "subpopulation": sub,
+                "build": meta_out.get("hmpos_source_build", ""),
+                "weights_path": os.path.abspath(final_tsv),
+                "weights_md5": md5_file(final_tsv) or "",
+                "n_variants": str(meta_out.get("n_kept_rows", "")),
+                "weight_type": (meta_hdr.get("weight_type") or wt_c) if isinstance(wt_c, str) else str(wt_c),
+                "liftover_applied": str(int(bool(meta_out.get("liftover_applied", False)))),
+                "created_at_utc": meta_out.get("timestamp_utc", ""),
+                # Provenance
+                "hmpos_url": meta_out.get("hmpos_source_url", ""),
+                "hmpos_md5": meta_out.get("hmpos_download_md5", ""),
+                "maf_window": ("-".join(str(x) for x in meta_out.get("ambiguous_maf_window", [])) if isinstance(meta_out.get("ambiguous_maf_window"), (list, tuple)) else str(meta_out.get("ambiguous_maf_window", ""))).strip("-"),
+                "maf_file": meta_out.get("maf_file", ""),
+                # PGS Catalog fields
+                "pgs_name": pgs_catalog_fields.get("pgs_name", ""),
+                "trait_reported": pgs_catalog_fields.get("trait_reported", ""),
+                "trait_mapped_labels": pgs_catalog_fields.get("trait_mapped_labels", ""),
+                "trait_mapped_efo_ids": pgs_catalog_fields.get("trait_mapped_efo_ids", ""),
+                "publication_year": pgs_catalog_fields.get("publication_year", ""),
+                "publication_doi": pgs_catalog_fields.get("publication_doi", ""),
+                # Compact QC
+                "dropped_bad_pos": str((meta_out.get("base_drop_counters") or {}).get("dropped_bad_pos", 0)),
+                "dropped_liftover": str((meta_out.get("base_drop_counters") or {}).get("dropped_liftover", 0)),
+                "dropped_allele_invalid": str((meta_out.get("base_drop_counters") or {}).get("dropped_allele_invalid", 0)),
+                "dropped_ref_fetch": str((meta_out.get("base_drop_counters") or {}).get("dropped_ref_fetch", 0)),
+                "dropped_ref_mismatch": str((meta_out.get("base_drop_counters") or {}).get("dropped_ref_mismatch", 0)),
+                "dropped_weight_invalid": str((meta_out.get("base_drop_counters") or {}).get("dropped_weight_invalid", 0)),
+                "dropped_pal_maf_missing": str((meta_out.get("subpop_drop_counters") or {}).get("dropped_pal_maf_missing", 0)),
+                "dropped_pal_maf_ambig": str((meta_out.get("subpop_drop_counters") or {}).get("dropped_pal_maf_ambig", 0)),
+            }
+            update_registry_csv(REGISTRY_CSV_DEFAULT, reg_row)
+        except Exception as e:
+            LOG.warning("Failed to update registry CSV for %s %s: %s", pgs_id, sub, e)
 
     if not outputs:
         raise SystemExit("[ERROR] No subpopulation outputs were produced (check MAF files).")

@@ -55,21 +55,21 @@ def build_alt_database(ref_dir=None):
     """)
     
     # Look for BCF files (same pattern as your imputation script)
-    file_pattern = f"{ref_dir}/1000GP_chr*.bcf"
+    file_pattern = f"{ref_dir}/1kGP_high_coverage_Illumina.chr*.filtered.SNV_INDEL_SV_phased_panel.bcf"
     ref_files = glob.glob(file_pattern)
     
     if not ref_files:
         print(f"❌ No BCF files found in {ref_dir}")
-        print(f"💡 Expected pattern: 1000GP_chr*.bcf")
+        print(f"💡 Expected pattern: 1kGP_high_coverage_Illumina.chr*.filtered.SNV_INDEL_SV_phased_panel.bcf")
         return
     
     print(f"📊 Processing {len(ref_files)} reference files...")
     
     total_variants = 0
     for ref_file in sorted(ref_files):
-        # Extract chromosome from filename (1000GP_chr1.bcf -> 1)
+        # Extract chromosome from filename (1kGP_high_coverage_Illumina.chr1.filtered.SNV_INDEL_SV_phased_panel.bcf -> 1)
         basename = os.path.basename(ref_file)
-        chr_part = basename.replace('1000GP_chr', '').replace('.bcf', '')
+        chr_part = basename.replace('1kGP_high_coverage_Illumina.chr', '').replace('.filtered.SNV_INDEL_SV_phased_panel.bcf', '')
             
         print(f"  Processing chr{chr_part}...")
         

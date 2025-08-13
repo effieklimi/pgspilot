@@ -46,6 +46,34 @@ fi
 ### MODE 2: CONTAINER (worker) ###############################################
 ###############################################################################
 
+# 0. Ensure required genome_data downloads and local reference builds
+echo "==> [CONTAINER] Ensuring required genome_data downloads..."
+bash "/app/scripts/pipeline/download_data.sh" || exit 1
+
+echo "==> [CONTAINER] Ensuring reference builds (BCF/CSI and bref3)..."
+bash "/app/scripts/pipeline/build_refs.sh" || exit 1
+
+# 0.5 Generate/ensure ALT alleles lookup database
+ALT_DB="/app/genome_data/alt_alleles.db"
+REF_BCFS_DIR="/app/genome_data/ref_bcfs_b38"
+if [ -s "$ALT_DB" ]; then
+  echo "✓ [CONTAINER] ALT alleles DB already exists at $ALT_DB. Skipping."
+else
+  echo "==> [CONTAINER] Building ALT alleles DB at $ALT_DB..."
+  mkdir -p "/app/genome_data"
+  # build_alt_db.py writes to ./genome_data by default; ensure cwd=/app and pass explicit ref dir
+  (
+    cd /app && \
+    python3 /app/scripts/helpers/build_alt_db.py --ref-dir "$REF_BCFS_DIR"
+  ) || { echo "✗ [CONTAINER] Failed to build ALT alleles DB" >&2; exit 1; }
+  if [ -s "$ALT_DB" ]; then
+    echo "✓ [CONTAINER] ALT alleles DB ready: $ALT_DB"
+  else
+    echo "✗ [CONTAINER] ALT alleles DB missing or empty after build." >&2
+    exit 1
+  fi
+fi
+
 # 1. Generate LD-pruned panel 
 if [ -f "$PRUNED_PATH" ]; then
   echo "✓ [CONTAINER] Pruned panel already exists at $PRUNED_PATH. Skipping."

@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblzma-dev \
     python3-dev \
     libcurl4-openssl-dev \
-    openjdk-11-jre \
+    openjdk-17-jre \
     python3 \
     python3-pip \
     git \

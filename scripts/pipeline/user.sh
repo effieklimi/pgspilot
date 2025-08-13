@@ -77,8 +77,7 @@ if [ -z "${INSIDE_DOCKER:-}" ]; then
     -v "${PROJECT_ROOT}/genome_data:/app/genome_data" \
     -v "${PROJECT_ROOT}/pca_model:/app/pca_model" \
     -v "${PROJECT_ROOT}/traits:/app/traits" \
-    -v "${PROJECT_ROOT}/weights_hm:/app/weights_hm" \
-    -v "${PROJECT_ROOT}/weights_raw:/app/weights_raw" \
+    -v "${PROJECT_ROOT}/pgs:/app/pgs" \
     -v "${PROJECT_ROOT}/users:/app/users" \
     -v "${PROJECT_ROOT}/calibration:/app/calibration" \
     -v "${PROJECT_ROOT}/scripts:/app/scripts:ro" \
@@ -213,37 +212,46 @@ else
 
   fi
 
-  # 3) Project user PCs and assign ancestry
-  echo "==> Calling ancestry…"
-  USER_PCS="$USER_DIR/user_pcs.tsv"
-  python /app/scripts/analyses/assign_ancestry.py \
-    --user-pfile "$USER_PFILE" \
-    --out-ancestry "$USER_DIR/ancestry.tsv" \
-    --out-pcs "$USER_PCS" \
-    --pcs 6
+  # 3) Project user PCs and assign ancestry (skip if ancestry already exists)
+  if [[ -s "$USER_DIR/ancestry.tsv" ]]; then
+    echo "✓ Found existing ancestry file at $USER_DIR/ancestry.tsv — skipping reassignment."
+    # Print existing ancestry from the file for visibility
+    EXISTING_SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv" || true)
+    if [[ -n "$EXISTING_SUBPOP" ]]; then
+      echo "==> Existing ancestry: $EXISTING_SUBPOP"
+    fi
+  else
+    echo "==> Calling ancestry…"
+    USER_PCS="$USER_DIR/user_pcs.tsv"
+    python /app/scripts/analyses/assign_ancestry.py \
+      --user-pfile "$USER_PFILE" \
+      --out-ancestry "$USER_DIR/ancestry.tsv" \
+      --out-pcs "$USER_PCS" \
+      --pcs 6
+  fi
 
   SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")
   if [[ -z "$SUBPOP" || "$SUBPOP" == "Uncertain" ]]; then
-    echo "✗ Ancestry uncertain; skipping scoring. (Consider fallback policy.)" >&2
+    echo "✗ Ancestry uncertain; skipping scoring." >&2
     exit 2
   fi
   echo "==> Ancestry: $SUBPOP"
 
 
-  # # 3) Score all PGS for that ancestry
-  # SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
-  # bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
+  # 4) Score all PGS for that ancestry
+  SCORES_DIR="$USER_DIR/pgs_scores"; mkdir -p "$SCORES_DIR"
+  bash /app/scripts/analyses/score_all_pgs.sh "$USER_PFILE" "$STEM" "$SUBPOP" "$SCORES_DIR"
 
-  # # 4) Collect + standardize → JSON
-  # STD_TABLE="/app/weights_hm/pgs_standardization.tsv"
-  # OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
-  # python /app/scripts/analyses/collect_scores.py \
-  #   --results-dir "$SCORES_DIR" \
-  #   --standardization "$STD_TABLE" \
-  #   --user-iid "$STEM" \
-  #   --subpop "$SUBPOP" \
-  #   --out-json "$OUT_JSON"
+  # 5) Collect + standardize → JSON
+  STD_TABLE="/app/pgs/weights/harmonized/standardization.tsv"
+  OUT_JSON="$USER_DIR/${STEM}_${SUBPOP}_pgs.json"
+  python /app/scripts/analyses/collect_scores.py \
+    --results-dir "$SCORES_DIR" \
+    --standardization "$STD_TABLE" \
+    --user-iid "$STEM" \
+    --subpop "$SUBPOP" \
+    --out-json "$OUT_JSON"
 
-  # echo "✓ Done. Results: $OUT_JSON"
+  echo "✓ Done. Results: $OUT_JSON"
 
 fi

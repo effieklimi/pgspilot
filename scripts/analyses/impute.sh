@@ -409,11 +409,11 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 
   ### ─────────────────────────── 4. Eagle phasing ────────────────────────────###
   for CHR in {1..22}; do
-    REF_BCF="${REF_DIR_EAGLE}/1000GP_chr${CHR}.bcf"
+    REF_BCF="${REF_DIR_EAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bcf"
     [[ -f "$REF_BCF" ]] || { echo "✗ Missing Eagle ref: $REF_BCF"; exit 1; }
 
     # 1) Prefix Eagle map with chr
-    RAW_MAP="${MAP_DIR_EAGLE}/eagle_chr${CHR}_b38.map.gz"
+    RAW_MAP="${MAP_DIR_EAGLE}/genetic_map_hg38_withX.txt.gz"
     TMP_MAP="${OUT_DIR}/tmp_eagle_chr${CHR}.map.gz"
 
     # debug_vcf "$CHR_VCF"
@@ -499,7 +499,7 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
 ### ─────────────────────────── 5. Beagle imputation ────────────────────────###
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"
-  REF="${REF_DIR_BEAGLE}/1000GP_chr${CHR}.bref3"
+  REF="${REF_DIR_BEAGLE}/1kGP_high_coverage_Illumina.chr${CHR}.filtered.SNV_INDEL_SV_phased_panel.bref3"
   MAP="${MAP_DIR_BEAGLE}/plink.chr${CHR}GRCh38.map"
   TEMP_MAP=$(mktemp) 
 
