@@ -80,12 +80,12 @@ pgs_scores/
 │   ├── PGS000300.AMR.normalized.tsv
 │   ├── PGS000300.AMR.skipped.tsv # `.skipped` folder is written when there is no overlap
 │   ├── PGS000300.AMR.sscore
-│   └── PGS000300.AMR.sscore.vars
+│   └── PGS000300.AMR.sscore.vars # contain's the user's exact variants that were included in the PGS weights file (should be empty here)
 └── PGS002149/ # example of a PGS weights file that has overlap with the user's variants
     ├── PGS002149.AMR.log
     ├── PGS002149.AMR.normalized.tsv # this contains both RAW score and SUBPOPULATION-NORMALISED score
     ├── PGS002149.AMR.sscore
-    └── PGS002149.AMR.sscore.vars
+    └── PGS002149.AMR.sscore.vars # this one should not be empty
 ```
 
 - SUBPOPULATION-NORMALISED score is a standard deviation - where the user is placed within their assigned subpopulation (i.e. how much higher or lower risk VS their population's average)
