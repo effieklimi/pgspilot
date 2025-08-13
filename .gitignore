@@ -5,8 +5,16 @@ genome_data/ref_brefs_b38
 genome_data/alt_alleles.db
 
 users/
-pca_model/
+pca_model/tmp
+pca_model/maf_AFR.grch38.tsv.gz
+pca_model/maf_AMR.grch38.tsv.gz
+pca_model/maf_EAS.grch38.tsv.gz
+pca_model/maf_EUR.grch38.tsv.gz
+pca_model/maf_SAS.grch38.tsv.gz
 pgs/
 input_data/
 plink2
 vcf_subset
+pca_model/labels.AFR.keep
+pca_model/labels.AMR.keep
+pca_model/labels.EAS.keep

@@ -405,7 +405,7 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
 
     # Keep only labeled samples that are present in the VCFs
     v0_samples = set(vcfs[0].samples)
-    df_lab = df_lab[df_lab.sample.isin(v0_samples)].copy()
+    df_lab = df_lab[df_lab["sample"].isin(v0_samples)].copy()
     if df_lab.empty:
         raise RuntimeError("No overlap between labeled samples and VCF samples.")
     df_lab.sort_values("sample", inplace=True)
@@ -413,7 +413,7 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     X, sites_used, filled_mask = load_genotype_matrix(
         vcfs=vcfs,
         panel=panel,
-        label_samples=df_lab.sample.tolist(),
+        label_samples=df_lab["sample"].tolist(),
         exclude_regions=exclude_regions,
         impute_info_key=args.impute_info_key,
         impute_min=args.impute_min,
@@ -451,7 +451,7 @@ def cmd_fit_ref(args: argparse.Namespace) -> None:
     pc_cols = [f"PC{i}" for i in range(1, k+1)]
     ref_scores = pd.DataFrame(scores, columns=pc_cols)
     ref_scores.insert(0, "super_pop", df_lab.super_pop.values)
-    ref_scores.insert(0, "sample", df_lab.sample.values)
+    ref_scores.insert(0, "sample", df_lab["sample"].values)
     ref_scores.to_csv(os.path.join(args.out, "ref_scores.csv"), index=False)
 
     centroids, inv_covs, pops = pop_params_from_scores(ref_scores, pc_cols)
