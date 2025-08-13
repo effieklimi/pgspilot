@@ -34,23 +34,40 @@ bash scripts/run_add_pgs.sh PGS002149
 - Fetch the already harmonized PGS weights file from the PGS catalogue
 - Create weights files per subpopulation
 - Append the PGS ID, along with other metadata, to a global registry of all PGSs added so far, stored in `/pgs/weights/harmonized`
+- Standardize it per subpopulation (needed for subpopulation-based ranking)
 
 ## Run every time you need to score a user:
 
 ```
-bash run_qc_genome.sh <path/to/23andMe/file>.txt
-bash run_user.sh <path/to/23andMe/file>.txt
+bash scripts/run_qc_genome.sh <path/to/23andMe/file>.txt
+bash scripts/run_user.sh <path/to/23andMe/file>.txt
 ```
 
 **These will:**
 
-- Do quality control on the given genome file
+- Do quality control on the given genome file. `run_qc_genome` writes:
+  1. A single text report with QC/metadata and a final status line (PASS/FAIL).
+  2. Filename: {STEM}\_initial_qc.txt where {STEM} is your input filename without .txt/.gz.
 - Run imputation on the user's genome, and generate a directory inside `/users` where all subsequent results will be saved for the user
-- Imputated genome: `/user/userPath/<name/of/genome/file>_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
-- Imputation quality control files: in `/user/userPath/imputation_qc_reports`
-- User's plink2 files: in `/user/userPath/pfiles`
-- Subpopulation assigned using PCA: `/user/userPath/ancestry.tsv`
-- User's PGS scores: `/user/userPath/pgs_scores`
+- Imputated genome: `/user/{STEM}/<name/of/genome/file>_imputed_all.vcf.gz` and its corresponding indexed file `.tbi`
+- Imputation quality control files: in `/user/{STEM}/imputation_qc_reports`
+- User's plink2 files: in `/user/{STEM}/pfiles`
+- Subpopulation assigned using PCA: `/user/{STEM}/ancestry.tsv`
+- User's PGS scores: `/user/{STEM}/pgs_scores`. They are organised in directories, each corresponding to one PGS score:
+
+```
+pgs_scores/
+├── PGS000300/ # example of a PGS weights file that has NO OVERLAP with the user's variants
+│   ├── PGS000300.AMR.normalized.tsv
+│   ├── PGS000300.AMR.skipped.tsv # `.skipped` folder is written when there is no overlap
+│   ├── PGS000300.AMR.sscore
+│   └── PGS000300.AMR.sscore.vars
+└── PGS002149/ # example of a PGS weights file that has overlap with the user's variants
+    ├── PGS002149.AMR.log
+    ├── PGS002149.AMR.normalized.tsv
+    ├── PGS002149.AMR.sscore
+    └── PGS002149.AMR.sscore.vars
+```
 
 ## Redo PCA
 
@@ -58,7 +75,7 @@ bash run_user.sh <path/to/23andMe/file>.txt
 
 In the current pilot implementation, the PCA was run with 6 principal components for speed. The analyses will run using those PCA results, but the scores obtained with it will not be optimal. Six PCs is not enough here.
 
-Things to keep in mind and steps that need to be taken:
+**Things to keep in mind and steps that need to be taken:**
 
 - Make sure that the analyses work on your local machine with the files generated using 6 prinicipal components
 - Then, delete everything inside the `pca_model` folder
