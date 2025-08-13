@@ -325,21 +325,61 @@ score_one(){
     matched_variants=$(awk 'NR>1{c++} END{print c+0}' "$svars_path" 2>/dev/null || echo 0)
   fi
 
-  # Extract user's raw score from .sscore (prefer SCORE1_SUM, else SCORE1_AVG, else SCORE)
+  # Extract user's raw score from .sscore
+  # Prefer canonical PLINK2 names (SCORE1_SUM, then SCORE1_AVG, then SCORE).
+  # Fall back to any "*_SUM" (excluding technical counters like ALLELE_CT and NAMED_ALLELE_DOSAGE_SUM),
+  # then any "*_AVG" (e.g., BETA_SUM / BETA_AVG in newer PLINK2 builds).
   local raw_score=""
   if [[ -s "$sscore_path" ]]; then
     raw_score=$(awk -v uid="$USER_ID" '
       BEGIN{FS=OFS="\t"}
       NR==1{
-        for(i=1;i<=NF;i++){h[$i]=i}
-        sc=-1; if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; next
+        # Map header names and keep original order
+        for(i=1;i<=NF;i++){hdr[i]=$i; h[$i]=i}
+        sc=-1;
+        # Direct matches first
+        if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; 
+        # Any *_SUM (excluding technical counters) if still not found
+        if(sc<0){
+          for(i=1;i<=NF;i++){
+            col=hdr[i];
+            if(col=="ALLELE_CT" || col=="NAMED_ALLELE_DOSAGE_SUM") continue;
+            if(col ~ /_SUM$/){ sc=i; break }
+          }
+        }
+        # Any *_AVG if still not found (e.g., BETA_AVG)
+        if(sc<0){
+          for(i=1;i<=NF;i++){
+            col=hdr[i];
+            if(col ~ /_AVG$/){ sc=i; break }
+          }
+        }
+        next
       }
       sc>0 && $2==uid { print $sc; exit }
     ' "$sscore_path" 2>/dev/null || true)
     # If empty, try whitespace-sep read
     if [[ -z "$raw_score" ]]; then
       raw_score=$(awk -v uid="$USER_ID" '
-        NR==1{for(i=1;i<=NF;i++){h[$i]=i}; sc=-1; if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; next}
+        NR==1{
+          for(i=1;i<=NF;i++){hdr[i]=$i; h[$i]=i}
+          sc=-1;
+          if("SCORE1_SUM" in h) sc=h["SCORE1_SUM"]; else if("SCORE1_AVG" in h) sc=h["SCORE1_AVG"]; else if("SCORE" in h) sc=h["SCORE"]; 
+          if(sc<0){
+            for(i=1;i<=NF;i++){
+              col=hdr[i];
+              if(col=="ALLELE_CT" || col=="NAMED_ALLELE_DOSAGE_SUM") continue;
+              if(col ~ /_SUM$/){ sc=i; break }
+            }
+          }
+          if(sc<0){
+            for(i=1;i<=NF;i++){
+              col=hdr[i];
+              if(col ~ /_AVG$/){ sc=i; break }
+            }
+          }
+          next
+        }
         sc>0 && $2==uid { print $sc; exit }
       ' "$sscore_path" 2>/dev/null || true)
     fi

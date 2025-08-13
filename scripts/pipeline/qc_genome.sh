@@ -61,6 +61,10 @@ EXPECT_V4_MAX="${EXPECT_V4_MAX:-650000}"
 EXPECT_V3_MIN="${EXPECT_V3_MIN:-800000}"
 EXPECT_V3_MAX="${EXPECT_V3_MAX:-1100000}"
 
+# If variant count does not fit any supported 23andMe window (v3/v4/v5),
+# fail the QC by default. Set to 0 to only warn instead.
+FAIL_ON_UNKNOWN_VARIANT_COUNT="${FAIL_ON_UNKNOWN_VARIANT_COUNT:-1}"
+
 MAX_BAD_ROWS="${MAX_BAD_ROWS:-0}"          # non-4-field data lines
 MAX_MISS_RATE="${MAX_MISS_RATE:-0.05}"     # 5% default is sane
 MAX_INVALID_FIELDS="${MAX_INVALID_FIELDS:-0}"  # sum of invalid chr/pos/gt
@@ -245,6 +249,12 @@ fi
 
 rate_pct=$(awk -v x="$miss_rate" 'BEGIN{printf "%.2f", x*100}')
 awk -v x="$miss_rate" -v thr="$MAX_MISS_RATE" 'BEGIN{exit !(x>thr)}' && { status="FAIL"; notes+=("Missing/no-call rate too high: '"$rate_pct"'%"); } || true
+
+# Enforce expected 23andMe size windows unless explicitly relaxed
+if [[ "$infer_ver" == "unknown" && "$FAIL_ON_UNKNOWN_VARIANT_COUNT" == "1" ]]; then
+  status="FAIL"
+  notes+=("Variant count ($rows) outside expected 23andMe v3/v4/v5 windows; file may be imputed, merged, or from a different vendor")
+fi
 
 # Warnings (do not flip PASS->FAIL)
 if (( dup > WARN_DUP_RSIDS )); then notes+=("Many duplicate rsids: $dup"); [[ "$status" == "PASS" ]] && status="WARN"; fi
