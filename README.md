@@ -29,7 +29,7 @@ bash scripts/run_setup.sh
 bash scripts/run_add_pgs.sh PGS002149
 ```
 
-**Key output:** a folder called `/pgs/weights` in the project route with everything you need to score users later.
+**Key output:** a folder called `/pgs/weights` in the project root with everything you need to score users later.
 
 **This will:**
 
