@@ -477,15 +477,6 @@ if [[ "$INPUT_BUILD" == 37 ]]; then
     rm "$TMP_MAP"
   done
 
-    # 3) Post-phasing QC (sample chr21 & chr22)
-   echo "==> QC: post_phasing"
-   for CHR in 21 22; do
-      run_qc_analysis \
-        "${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz" \
-        "post_phasing_chr${CHR}" \
-        "$QC_DIR"
-  done
-
 ### 5. Beagle imputation
 for CHR in {1..22}; do 
   GT="${PHASED_DIR}/${STEM}_phased_chr${CHR}.vcf.gz"

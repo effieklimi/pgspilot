@@ -150,6 +150,12 @@ else
     ! -name "ref_scores.csv" \
     ! -name "classifier.pkl" \
     ! -name "meta.json" \
+    ! -name "maf_AFR.grch38.tsv.gz" \
+    ! -name "maf_AMR.grch38.tsv.gz" \
+    ! -name "maf_EAS.grch38.tsv.gz" \
+    ! -name "maf_EUR.grch38.tsv.gz" \
+    ! -name "maf_SAS.grch38.tsv.gz" \
+    ! -name "labels.keep" \
     -exec rm -rf -- {} +
 fi
 

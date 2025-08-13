@@ -1,0 +1,15 @@
+{
+  "n_samples": 2504,
+  "n_sites": 334987,
+  "pcs": 12,
+  "labels_file": "/app/scripts/helpers/integrated_call_samples_v3.20130502.ALL.panel",
+  "sites_file": "/app/pca_model/pca_sites.b38.tsv",
+  "vcf_pattern": "/app/genome_data/1000G/1kGP_high_coverage_Illumina.chr{chr}.filtered.SNV_INDEL_SV_phased_panel.vcf.gz",
+  "exclude_mhc": true,
+  "exclude_long_range": true,
+  "exclude_bed": null,
+  "impute_info_key": null,
+  "impute_min": null,
+  "allow_allele_swap": false,
+  "allow_strand_flip": false
+}
