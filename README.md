@@ -43,7 +43,7 @@ bash scripts/run_add_pgs.sh PGS002149
 
 ```
 bash scripts/run_qc_genome.sh <path/to/23andMe/file>.txt
-bash scripts/run_user.sh <path/to/23andMe/file>.txt
+bash scripts/run_pipeline.sh <path/to/23andMe/file>.txt
 ```
 
 **The key output:** a file called `PGSXXXX.SUB.normalized.tsv` per PGS ID.
