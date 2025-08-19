@@ -216,7 +216,7 @@ else
       --user-pfile "$USER_PFILE" \
       --out-ancestry "$USER_DIR/ancestry.tsv" \
       --out-pcs "$USER_PCS" \
-      --pcs 6
+      --pcs 12
   fi
 
   SUBPOP=$(awk -F'\t' 'NR==2{print $2}' "$USER_DIR/ancestry.tsv")

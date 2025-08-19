@@ -5,7 +5,7 @@ df = pd.read_csv("/Users/effieklimi/Documents/projects/pgspilot/pca_model/ref_sc
 
 fig, ax = plt.subplots()
 for pop, g in df.groupby("super_pop"):
-    ax.scatter(g["PC10"], g["PC11"], s=12, alpha=0.7, label=pop)
+    ax.scatter(g["PC8"], g["PC9"], s=12, alpha=0.7, label=pop)
 
 ax.set_xlabel("PC10")
 ax.set_ylabel("PC11")

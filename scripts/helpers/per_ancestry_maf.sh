@@ -10,6 +10,19 @@ PCA_DIR="/app/pca_model"
 TMP_DIR="${PCA_DIR}/tmp"
 mkdir -p "${TMP_DIR}"
 
+# Detect whether this plink2 build supports "--freq cols=..." to request
+# specific output columns. Prefer POS and A1_FREQ when available.
+if plink2 --help freq 2>&1 | grep -qi 'cols='; then
+  freq_cols="+pos"
+  if plink2 --help freq 2>&1 | grep -qi 'a1freq'; then
+    freq_cols="${freq_cols},+a1freq"
+  fi
+  # IMPORTANT: cols must be a single argument; comma-separated modifiers
+  FREQ_ARGS=( --freq "cols=${freq_cols}" )
+else
+  FREQ_ARGS=( --freq )
+fi
+
 # Prepare keep list
 # Build per-superpop keep lists (EUR/AFR/EAS/AMR/SAS) only if missing
 for SP in AFR AMR EAS EUR SAS; do
@@ -41,7 +54,7 @@ for c in {1..22}; do
     plink2 \
       --pfile "${TMP_DIR}/maf_chr${c}" \
       --keep "${PCA_DIR}/labels.${SP}.keep" \
-      --freq \
+      "${FREQ_ARGS[@]}" \
       --out "${TMP_DIR}/freq_${SP}_chr${c}"
 
     # Convert .afreq to the 5-column format (robust to column order)
