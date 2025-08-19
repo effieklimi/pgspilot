@@ -11,7 +11,7 @@ pca_model/maf_AMR.grch38.tsv.gz
 pca_model/maf_EAS.grch38.tsv.gz
 pca_model/maf_EUR.grch38.tsv.gz
 pca_model/maf_SAS.grch38.tsv.gz
-pgs/
+pgs/weights/standardization/tmp_std
 input_data/
 plink2
 vcf_subset

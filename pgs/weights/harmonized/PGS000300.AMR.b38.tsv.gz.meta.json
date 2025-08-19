@@ -1,0 +1,40 @@
+{
+  "pgs_id": "PGS000300",
+  "subpopulation": "AMR",
+  "hmpos_source_build": "GRCh38",
+  "liftover_applied": false,
+  "liftover_chain": "",
+  "liftover_chain_md5": "",
+  "hmpos_source_url": "https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/PGS000300/ScoringFiles/Harmonized/PGS000300_hmPOS_GRCh38.txt.gz",
+  "hmpos_download_md5": "b2194708956598201fd3e2322c2683fd",
+  "resolved_via": "REST",
+  "fasta38": "/app/genome_data/fasta/Homo_sapiens_assembly38.fasta",
+  "fasta38_md5": "7ff134953dcca8c8997453bbb80b6b5e",
+  "maf_file": "/app/pca_model/maf_AMR.grch38.tsv.gz",
+  "ambiguous_maf_window": [
+    0.45,
+    0.55
+  ],
+  "weight_type_src": "Beta",
+  "n_input_rows": 81,
+  "n_base_kept": 80,
+  "n_kept_rows": 67,
+  "base_drop_counters": {
+    "input_rows": 81,
+    "dropped_bad_pos": 1,
+    "dropped_liftover": 0,
+    "dropped_allele_invalid": 0,
+    "dropped_ref_fetch": 0,
+    "dropped_ref_mismatch": 0,
+    "dropped_weight_invalid": 0
+  },
+  "subpop_drop_counters": {
+    "subpopulation": "AMR",
+    "n_candidates": 80,
+    "dropped_pal_maf_missing": 13,
+    "dropped_pal_maf_ambig": 0
+  },
+  "out_path": "/app/pgs/weights/harmonized/PGS000300.AMR.b38.tsv.gz",
+  "timestamp_utc": "2025-08-10T17:19:47Z",
+  "notes": "Used hmPOS (GRCh38 preferred; lifted from GRCh37 if needed). Applied subpopulation-specific MAF filtering to palindromic SNPs."
+}
